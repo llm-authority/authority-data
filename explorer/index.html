@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Authority Data Explorer</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark">AD</span>
+          <div>
+            <h1>Authority Data</h1>
+            <p>Local explorer</p>
+          </div>
+        </div>
+
+        <label>
+          Dataset
+          <select id="datasetSelect"></select>
+        </label>
+        <label>
+          Config
+          <select id="configSelect"></select>
+        </label>
+        <label>
+          Split
+          <select id="splitSelect"></select>
+        </label>
+
+        <div class="split-count" id="splitCount"></div>
+      </aside>
+
+      <main class="workspace">
+        <header class="toolbar">
+          <div class="search-wrap">
+            <span aria-hidden="true">⌕</span>
+            <input id="searchInput" type="search" placeholder="Search rows" />
+          </div>
+          <select id="labelFilter" aria-label="Label filter"></select>
+          <select id="actionFilter" aria-label="Action filter"></select>
+          <button id="reloadButton" type="button">Reload</button>
+        </header>
+
+        <section class="stats" id="stats"></section>
+
+        <section class="content-grid">
+          <div class="table-panel">
+            <div class="table-head">
+              <span id="resultCount"></span>
+              <div class="pager">
+                <button id="prevButton" type="button">Prev</button>
+                <span id="pageInfo"></span>
+                <button id="nextButton" type="button">Next</button>
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Sample</th>
+                    <th>Label</th>
+                    <th>Type</th>
+                    <th>Tool</th>
+                    <th>Task</th>
+                  </tr>
+                </thead>
+                <tbody id="rowsBody"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <aside class="detail-panel">
+            <div class="detail-head">
+              <div>
+                <p id="detailKicker"></p>
+                <h2 id="detailTitle">Select a row</h2>
+              </div>
+              <span id="detailLabel"></span>
+            </div>
+            <div class="detail-sections" id="detailSections"></div>
+          </aside>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
