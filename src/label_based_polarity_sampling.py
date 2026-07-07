@@ -4,12 +4,35 @@ from __future__ import annotations
 
 import json
 import random
-from itertools import product
-from typing import Any
+from typing import Any, Iterable
 
 
 POLARITIES = ("yes", "no")
 USER_IDS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+
+def parse_user_counts(num_users: int | str | Iterable[int]) -> list[int]:
+    if isinstance(num_users, int):
+        counts = [num_users]
+    elif isinstance(num_users, str):
+        counts = [
+            int(part.strip())
+            for part in num_users.split(",")
+            if part.strip()
+        ]
+    else:
+        counts = list(num_users)
+
+    if not counts:
+        raise ValueError("At least one user count is required.")
+
+    normalized = []
+    for count in counts:
+        if not 1 <= count <= len(USER_IDS):
+            raise ValueError(f"user counts must be between 1 and {len(USER_IDS)}")
+        if count not in normalized:
+            normalized.append(count)
+    return normalized
 
 
 def label_items(
@@ -34,35 +57,46 @@ def label_items(
 
 def polarity_sampling(
     samples: list[dict[str, Any]],
-    num_users: int = 2,
+    num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
     rng: random.Random | None = None,
 ) -> list[dict[str, Any]]:
-    """Expand attribute samples into yes/no label cases.
+    """Expand attribute samples into priority-aware yes/no label cases.
 
-    The selected query attributes get the fixed label for each user. All other
-    attributes receive random yes/no labels.
+    For each user count, a random priority order is sampled. The highest-priority
+    user's selected query label is the gold label. For two or more users,
+    conflict and non-conflict cases are generated evenly: conflict means at
+    least one lower-priority user assigns the opposite selected query label.
     """
 
     rng = rng or random
-    if not 1 <= num_users <= len(USER_IDS):
-        raise ValueError(f"num_users must be between 1 and {len(USER_IDS)}")
+    user_counts = parse_user_counts(num_users)
 
     results: list[dict[str, Any]] = []
-    user_ids = list(USER_IDS[:num_users])
-    fixed_cases = list(product(POLARITIES, repeat=num_users))
 
     for row_idx, sample in enumerate(samples):
         front_values = list(sample["front"])
         back_values = list(sample["back"])
         selected_front = rng.choice(front_values)
         selected_back = rng.choice(back_values)
+        case_specs = make_case_specs(user_counts, rng=rng)
 
-        for case_id, selected_labels in enumerate(fixed_cases):
+        for case_id, (user_count, target_label, has_conflict) in enumerate(case_specs):
+            user_ids = list(USER_IDS[:user_count])
             for random_fill_idx in range(num_random_fills):
+                priority = rng.sample(user_ids, k=len(user_ids))
+                target_user = priority[0]
+                selected_labels = make_selected_labels(
+                    user_ids=user_ids,
+                    priority=priority,
+                    target_label=target_label,
+                    has_conflict=has_conflict,
+                    rng=rng,
+                )
                 authority_setting = []
 
-                for user_id, selected_label in zip(user_ids, selected_labels):
+                for user_id in user_ids:
+                    selected_label = selected_labels[user_id]
                     authority_setting.append(
                         {
                             "user": user_id,
@@ -90,6 +124,9 @@ def polarity_sampling(
                         "sample_idx": sample["sample_idx"],
                         "case_id": case_id,
                         "random_fill_idx": random_fill_idx,
+                        "user_count": user_count,
+                        "target_user": target_user,
+                        "target_label": target_label,
                         "category_axes": sample["category_axes"],
                         "categories": sample["categories"],
                         "front_category": sample["front_category"],
@@ -105,13 +142,80 @@ def polarity_sampling(
                             "back": selected_back,
                         },
                         "authority_setting": authority_setting,
-                        "priority": user_ids,
-                        "label": selected_labels[0],
-                        "user_conflict": "yes" if len(set(selected_labels)) > 1 else "no",
+                        "priority": priority,
+                        "label": target_label,
+                        "user_conflict": "yes" if has_conflict else "no",
                     }
                 )
 
     return results
+
+
+def make_case_specs(
+    user_counts: list[int],
+    *,
+    rng: random.Random,
+) -> list[tuple[int, str, bool]]:
+    specs: list[tuple[int, str, bool]] = []
+    conflict_capable_counts = [count for count in user_counts if count >= 2]
+
+    for user_count in user_counts:
+        conflict_options = (False,) if user_count == 1 else (False, True)
+        for target_label in POLARITIES:
+            for has_conflict in conflict_options:
+                specs.append((user_count, target_label, has_conflict))
+
+    non_conflict_count = sum(not has_conflict for _, _, has_conflict in specs)
+    conflict_count = sum(has_conflict for _, _, has_conflict in specs)
+    deficit = non_conflict_count - conflict_count
+    if deficit > 0 and conflict_capable_counts:
+        for index in range(deficit):
+            specs.append(
+                (
+                    rng.choice(conflict_capable_counts),
+                    POLARITIES[index % len(POLARITIES)],
+                    True,
+                )
+            )
+
+    rng.shuffle(specs)
+    return specs
+
+
+def opposite_label(label: str) -> str:
+    if label == "yes":
+        return "no"
+    if label == "no":
+        return "yes"
+    raise ValueError(f"Unknown label: {label!r}")
+
+
+def make_selected_labels(
+    *,
+    user_ids: list[str],
+    priority: list[str],
+    target_label: str,
+    has_conflict: bool,
+    rng: random.Random,
+) -> dict[str, str]:
+    target_user = priority[0]
+    lower_priority_users = priority[1:]
+    labels = {target_user: target_label}
+
+    if not has_conflict:
+        for user_id in lower_priority_users:
+            labels[user_id] = target_label
+        return labels
+
+    if not lower_priority_users:
+        raise ValueError("Conflict cases require at least two users.")
+
+    conflict_user = rng.choice(lower_priority_users)
+    conflict_label = opposite_label(target_label)
+    for user_id in lower_priority_users:
+        labels[user_id] = conflict_label if user_id == conflict_user else rng.choice(POLARITIES)
+
+    return labels
 
 
 def make_rows(

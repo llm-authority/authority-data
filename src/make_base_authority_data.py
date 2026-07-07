@@ -10,8 +10,9 @@ import argparse
 import json
 import random
 import sys
+from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,7 +38,7 @@ def _sample_expanded_authority_data(
     num_categories: int | None = None,
     max_k_pairs_per_category: int = 10,
     num_samples_per_k_pair: int = 10,
-    num_users: int = 2,
+    num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
     rng = random.Random(seed)
@@ -75,7 +76,7 @@ def generate_authority_data(
     num_categories: int | None = None,
     max_k_pairs_per_category: int = 10,
     num_samples_per_k_pair: int = 10,
-    num_users: int = 2,
+    num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
 ) -> tuple[list[dict], dict[str, int]]:
     """Return the legacy row shape used for quick previews."""
@@ -193,6 +194,9 @@ def make_base_row(
             "sample_idx": sample["sample_idx"],
             "case_id": sample["case_id"],
             "random_fill_idx": sample["random_fill_idx"],
+            "user_count": sample["user_count"],
+            "target_user": sample["target_user"],
+            "target_label": sample["target_label"],
         },
     }
     if tool_name is not None:
@@ -246,13 +250,23 @@ def add_row_ids(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def summarize_base_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    return {
+        "labels": dict(Counter(row["Label"] for row in rows)),
+        "conflict": dict(Counter(str(row["metadata"]["is_conflict"]) for row in rows)),
+        "user_count": dict(
+            Counter(str(len(row["AuthoritySetting"]["users"])) for row in rows)
+        ),
+    }
+
+
 def generate_base_authority_datasets(
     *,
     seed: int = 42,
     num_categories: int | None = None,
     max_k_pairs_per_category: int = 10,
     num_samples_per_k_pair: int = 10,
-    num_users: int = 2,
+    num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     expanded_samples, sampling_counts = _sample_expanded_authority_data(
@@ -277,6 +291,7 @@ def generate_base_authority_datasets(
         "rows_before_deduplication": len(rows),
         "rows": len(deduplicated),
         "dropped_duplicates": len(rows) - len(deduplicated),
+        "distribution": summarize_base_rows(deduplicated),
     }
 
     return datasets, counts
@@ -356,7 +371,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-k-pairs-per-category", type=int, default=10)
     parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
-    parser.add_argument("--num-users", type=int, default=2)
+    parser.add_argument(
+        "--num-users",
+        default="1,2,3,4",
+        help="Comma-separated user counts to generate. Default: 1,2,3,4.",
+    )
     parser.add_argument("--num-random-fills", type=int, default=2)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--test-ratio", type=float, default=0.2)

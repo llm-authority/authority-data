@@ -40,7 +40,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-k-pairs-per-category", type=int, default=10)
     parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
-    parser.add_argument("--num-users", type=int, default=2)
+    parser.add_argument(
+        "--num-users",
+        default="1,2,3,4",
+        help="Comma-separated user counts to generate. Default: 1,2,3,4.",
+    )
     parser.add_argument("--num-random-fills", type=int, default=2)
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--base-output-dir", type=Path, default=DEFAULT_BASE_OUTPUT_DIR)
