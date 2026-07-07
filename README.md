@@ -1,105 +1,89 @@
 # Authority Data
 
-Dataset utilities and prepared JSONL files for authority-decision experiments.
+Synthetic authority-decision datasets for testing whether a model can follow
+priority-ordered allow/disallow rules.
 
-The import package is `authority_data`. It contains dataset exporters,
-benchmark normalizers, prompt renderers, and prepared local data files. Local
-maintenance commands live under `scripts/`.
+The Hugging Face dataset is organized as one repo with one config:
 
-## Install
+| Config | Splits | Description |
+| --- | --- | --- |
+| `GeneralAuthority` | `train`, `test` | Authority rules over request attributes. |
 
-For local development:
+Each final row has this shape:
 
-```bash
-pip install -e ".[hf,notebooks]"
-```
+| Column | Description |
+| --- | --- |
+| `id` | Split-local row id. |
+| `text` | Natural-language authority setting and query. |
+| `AttributeCombination` | Structured query attributes. |
+| `Label` | Gold decision, `Yes` or `No`. |
+| `metadata` | Categories, priority order, conflict flag, base authority setting, source ids, and prompt/paraphrase versions. |
 
-The base package has no required runtime dependencies. Install the `hf` extra
-when you want to load or push datasets with Hugging Face `datasets`.
-
-## Data Layout
+## Layout
 
 ```text
-authority_data/
-  authority.py          # authority dataset exporter
-  benchmarks.py         # AgentDojo / InjecAgent benchmark exporters
-  prompts.py            # shared prompt_v1 / prompt_v2 renderers
-
+authority-data/
+  make_data.py
+  hf_push.py
+  src/
+    make_base_authority_data.py
+    make_paraphrase_data.py
+    attribute_sampling.py
+    category_sampling.py
+    domains.py
+    label_based_polarity_sampling.py
   data/
-    authority/
-      permission/
-      prohibition/
-      permission_and_prohibition/
-    benchmarks/
-      agentdojo/
-      injecagent/
-
-scripts/
-  make_authority_data.py  # make local JSONL files
-  hf_push.py              # push prepared files to Hugging Face Hub
+    base/
+    paraphrase/
 ```
 
-Each dataset config is stored as `train.jsonl` and `test.jsonl`.
+`make_data.py` builds structured base rows first, then renders the final
+paraphrased JSONL files under `data/paraphrase/`.
 
-## Quick Use
+## Build
+
+```bash
+python make_data.py
+```
+
+Useful smaller local run:
+
+```bash
+python make_data.py \
+  --num-categories 1 \
+  --max-k-pairs-per-category 2 \
+  --num-samples-per-k-pair 2
+```
+
+## Push to Hugging Face
+
+Default target repo: `leo-bjpark/authority`
+
+```bash
+python hf_push.py --dry-run
+python hf_push.py
+```
+
+To push privately or with an explicit token:
+
+```bash
+python hf_push.py --private --token "$HF_TOKEN"
+```
+
+## Load
 
 ```python
-from importlib.resources import files
 from datasets import load_dataset
 
-config_dir = files("authority_data").joinpath("data", "authority", "permission")
-dataset = load_dataset(
-    "json",
-    data_files={
-        "train": str(config_dir / "train.jsonl"),
-        "test": str(config_dir / "test.jsonl"),
-    },
-)
+general = load_dataset("leo-bjpark/authority", "GeneralAuthority")
+
+print(general["train"][0])
 ```
 
-## Local Explorer
+## Generation Flow
 
-Start the local data explorer:
-
-```bash
-npm run dev
-```
-
-Then open the URL printed by the command. The explorer reads JSONL files from
-`authority_data/data/`.
-
-## Commands
-
-Make all local JSONL files:
-
-```bash
-python scripts/make_authority_data.py
-```
-
-Make only the synthetic authority data:
-
-```bash
-python scripts/make_authority_data.py --skip-agentdojo --skip-injecagent
-```
-
-Make normalized benchmark data:
-
-```bash
-python scripts/make_authority_data.py --skip-authority
-```
-
-Push prepared files to Hugging Face:
-
-```bash
-python scripts/hf_push.py --repo-id leo-bjpark/authorization_data_v1
-```
-
-Upstream source repositories are cloned under `authority_data/sources/` by the
-preparation commands and are intentionally ignored by git.
-
-## Notebooks
-
-Tutorial notebooks live under `notebooks/tutorials/`:
-
-- `authority.ipynb`: load and inspect the authority dataset configs.
-- `benchmarks.ipynb`: load and inspect the AgentDojo/InjecAgent configs.
+1. Sample category pairs and attribute combinations.
+2. Expand them into priority-ordered user authority rules.
+3. Split `GeneralAuthority` into `train` and `test`.
+4. Render each structured authority setting into `text`.
+5. Push `GeneralAuthority` to Hugging Face.

@@ -1,0 +1,107 @@
+"""Run the base and synthetic paraphrase data builders."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.make_base_authority_data import (
+    DEFAULT_OUTPUT_DIR as DEFAULT_BASE_OUTPUT_DIR,
+    generate_base_authority_datasets,
+    write_dataset_splits,
+)
+from src.make_paraphrase_data import (
+    DEFAULT_OUTPUT_DIR as DEFAULT_PARAPHRASE_OUTPUT_DIR,
+    DEFAULT_PROMPT_VERSION,
+    DATASET_NAMES,
+    make_paraphrase_data,
+    print_paraphrase_examples_table,
+    read_jsonl,
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build base authority data, synthetic paraphrases, and print previews."
+    )
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--num-categories",
+        type=int,
+        default=None,
+        help="Number of category pairs to sample. Defaults to all pairs.",
+    )
+    parser.add_argument("--max-k-pairs-per-category", type=int, default=10)
+    parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
+    parser.add_argument("--num-users", type=int, default=2)
+    parser.add_argument("--num-random-fills", type=int, default=2)
+    parser.add_argument("--test-ratio", type=float, default=0.2)
+    parser.add_argument("--base-output-dir", type=Path, default=DEFAULT_BASE_OUTPUT_DIR)
+    parser.add_argument(
+        "--paraphrase-output-dir",
+        type=Path,
+        default=DEFAULT_PARAPHRASE_OUTPUT_DIR,
+    )
+    parser.add_argument("--paraphrase-version", default="synthetic_v1")
+    parser.add_argument("--prompt-version", default=DEFAULT_PROMPT_VERSION)
+    parser.add_argument("--num-table-examples", type=int, default=5)
+    parser.add_argument("--num-full-examples", type=int, default=1)
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    print("[1] Build base authority data")
+    datasets, base_counts = generate_base_authority_datasets(
+        seed=args.seed,
+        num_categories=args.num_categories,
+        max_k_pairs_per_category=args.max_k_pairs_per_category,
+        num_samples_per_k_pair=args.num_samples_per_k_pair,
+        num_users=args.num_users,
+        num_random_fills=args.num_random_fills,
+    )
+    base_counts["written"] = write_dataset_splits(
+        datasets,
+        output_dir=args.base_output_dir,
+        test_ratio=args.test_ratio,
+        seed=args.seed,
+    )
+    print(json.dumps(base_counts, indent=2, ensure_ascii=False))
+    print()
+
+    print("[2] Build synthetic paraphrase data")
+    paraphrase_counts = make_paraphrase_data(
+        input_dir=args.base_output_dir,
+        output_dir=args.paraphrase_output_dir,
+        paraphrase_version=args.paraphrase_version,
+        prompt_version=args.prompt_version,
+    )
+    print(json.dumps(paraphrase_counts, indent=2, ensure_ascii=False))
+    print()
+
+    print("[3] Preview final data")
+    for dataset_name in DATASET_NAMES:
+        if dataset_name not in paraphrase_counts:
+            continue
+        path = args.paraphrase_output_dir / dataset_name / "train.jsonl"
+        if not path.exists():
+            continue
+        print_paraphrase_examples_table(
+            dataset_name,
+            read_jsonl(path),
+            num_table_examples=args.num_table_examples,
+            num_full_examples=args.num_full_examples,
+        )
+        print()
+
+
+if __name__ == "__main__":
+    main()

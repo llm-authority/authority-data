@@ -5,17 +5,6 @@ from setuptools import find_packages, setup
 
 ROOT = Path(__file__).parent
 README = ROOT / "README.md"
-PACKAGE_ROOT = ROOT / "authority_data"
-
-
-def _data_files() -> list[str]:
-    data_root = PACKAGE_ROOT / "data"
-    if not data_root.exists():
-        return []
-    return [
-        str(path.relative_to(PACKAGE_ROOT))
-        for path in sorted(data_root.rglob("*.jsonl"))
-    ]
 
 
 def build_setup_kwargs() -> dict[str, object]:
@@ -27,8 +16,8 @@ def build_setup_kwargs() -> dict[str, object]:
         "long_description_content_type": "text/markdown",
         "license": "Apache-2.0",
         "license_files": ["LICENSE"],
-        "packages": find_packages(include=["authority_data", "authority_data.*", "scripts", "scripts.*"]),
-        "package_data": {"authority_data": _data_files()},
+        "packages": find_packages(include=["src", "src.*"]),
+        "py_modules": ["make_data", "hf_push"],
         "include_package_data": False,
         "zip_safe": False,
         "python_requires": ">=3.10",
@@ -40,10 +29,8 @@ def build_setup_kwargs() -> dict[str, object]:
         },
         "entry_points": {
             "console_scripts": [
-                "authority-data-make=scripts.make_authority_data:main",
-                "authority-data-export-authority=authority_data.authority:main",
-                "authority-data-export-benchmarks=authority_data.benchmarks:main",
-                "authority-data-push-hf=scripts.hf_push:main",
+                "authority-data-make=make_data:main",
+                "authority-data-push-hf=hf_push:main",
             ],
         },
         "classifiers": [

@@ -1,0 +1,1 @@
+"""Authority data generation modules."""
