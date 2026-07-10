@@ -128,6 +128,16 @@ def parse_args() -> argparse.Namespace:
         help="Validate local files and print row counts without uploading.",
     )
     parser.add_argument(
+        "--skip-dataset-card",
+        action="store_true",
+        help="Do not upload README.md metadata for the Hugging Face dataset viewer.",
+    )
+    parser.add_argument(
+        "--dataset-card-only",
+        action="store_true",
+        help="Only upload README.md dataset viewer metadata; do not push data files.",
+    )
+    parser.add_argument(
         "--strict-cache",
         action="store_true",
         help="Fail if any base row is missing from the paraphrase cache.",
@@ -423,6 +433,99 @@ def push_config(
     dataset_dict.push_to_hub(repo_id, **push_kwargs)
 
 
+def strip_yaml_front_matter(text: str) -> str:
+    if not text.startswith("---\n"):
+        return text
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return text
+    return text[end + len("\n---\n") :].lstrip()
+
+
+def build_dataset_card(
+    *,
+    repo_id: str,
+    summary: dict[str, dict[str, dict[str, Any]]],
+) -> str:
+    lines = [
+        "---",
+        "configs:",
+    ]
+    for config_name, split_summary in summary.items():
+        lines.append(f"- config_name: {config_name}")
+        lines.append("  data_files:")
+        for split_name, info in split_summary.items():
+            if info["rows"] == 0:
+                continue
+            lines.append(f"  - split: {split_name}")
+            lines.append(f"    path: data/{config_name}/{split_name}-*.parquet")
+    lines.extend(
+        [
+            "---",
+            "",
+        ]
+    )
+
+    readme_path = REPO_ROOT / "README.md"
+    if readme_path.exists():
+        body = strip_yaml_front_matter(readme_path.read_text(encoding="utf-8"))
+    else:
+        body = (
+            "# AuthorityBench\n\n"
+            "Synthetic authority-decision datasets with deterministic V1 "
+            "configs and paraphrased V2 configs.\n"
+        )
+
+    usage = (
+        "\n## Hugging Face Loading\n\n"
+        "```python\n"
+        "from datasets import load_dataset\n\n"
+        f"ds = load_dataset(\"{repo_id}\", \"GeneralAuthorityV1\")\n"
+        "print(ds)\n"
+        "```\n"
+    )
+    return "\n".join(lines) + body.rstrip() + usage
+
+
+def upload_dataset_card(
+    *,
+    repo_id: str,
+    summary: dict[str, dict[str, dict[str, Any]]],
+    token: str | None,
+    commit_message: str | None,
+) -> None:
+    try:
+        from huggingface_hub import HfApi
+    except ImportError as exc:
+        raise ImportError(
+            "The `huggingface_hub` package is required to upload README.md."
+        ) from exc
+
+    api = HfApi(token=token)
+    api.upload_file(
+        path_or_fileobj=build_dataset_card(repo_id=repo_id, summary=summary).encode(
+            "utf-8"
+        ),
+        path_in_repo="README.md",
+        repo_id=repo_id,
+        repo_type="dataset",
+        commit_message=commit_message or "Update dataset card data files metadata",
+    )
+
+
+def print_dataset_card_metadata(summary: dict[str, dict[str, dict[str, Any]]]) -> None:
+    print("[hf_push] dataset card data_files metadata:")
+    for config_name, split_summary in summary.items():
+        print(f"[hf_push]   config_name: {config_name}")
+        for split_name, info in split_summary.items():
+            if info["rows"] == 0:
+                continue
+            print(
+                f"[hf_push]     {split_name}: "
+                f"data/{config_name}/{split_name}-*.parquet"
+            )
+
+
 def print_summary(summary: dict[str, dict[str, dict[str, Any]]]) -> None:
     for config_name, split_summary in summary.items():
         print(f"[hf_push] config = {config_name}")
@@ -566,9 +669,23 @@ def main() -> None:
         strict_cache=args.strict_cache,
     )
     print_summary(summary)
+    print_dataset_card_metadata(summary)
 
     if args.dry_run:
         print("[hf_push] dry run complete; no upload performed")
+        return
+
+    if args.dataset_card_only:
+        if args.skip_dataset_card:
+            raise ValueError("--dataset-card-only cannot be used with --skip-dataset-card")
+        print("[hf_push] uploading README.md dataset viewer metadata only")
+        upload_dataset_card(
+            repo_id=args.repo_id,
+            summary=summary,
+            token=args.token,
+            commit_message=args.commit_message,
+        )
+        print("[hf_push] done")
         return
 
     for config_spec in config_specs:
@@ -603,6 +720,17 @@ def main() -> None:
             dataset_dict=dataset_dict,
             private=args.private,
             max_shard_size=args.max_shard_size,
+            token=args.token,
+            commit_message=args.commit_message,
+        )
+
+    if args.skip_dataset_card:
+        print("[hf_push] skipping dataset card upload")
+    else:
+        print("[hf_push] uploading README.md dataset viewer metadata")
+        upload_dataset_card(
+            repo_id=args.repo_id,
+            summary=summary,
             token=args.token,
             commit_message=args.commit_message,
         )
