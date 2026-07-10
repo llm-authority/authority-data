@@ -14,7 +14,7 @@ DEFAULT_INPUT_DIR = REPO_ROOT / "data" / "base"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "paraphrase"
 DEFAULT_PARAPHRASE_VERSION = "synthetic_v1"
 DEFAULT_PROMPT_VERSION = "synthetic_prompt_v6"
-DATASET_NAMES = ("GeneralAuthority", "ToolAuthority")
+DATASET_NAMES = ("GeneralAuthorityV1", "ToolAuthorityV1")
 SPLIT_NAMES = ("train", "test")
 
 
@@ -126,7 +126,9 @@ def render_synthetic_paraphrase(base_row: dict[str, Any]) -> str:
     authority_setting = base_row["AuthoritySetting"]
     priority = base_row["metadata"]["priority"]
     tool = authority_setting.get("tool")
-    is_tool_authority = authority_setting.get("dataset") == "ToolAuthority"
+    is_tool_authority = str(authority_setting.get("dataset", "")).startswith(
+        "ToolAuthority"
+    )
 
     if is_tool_authority:
         scope = f"Task: decide whether the requested use of the {tool} tool is authorized."
@@ -161,20 +163,13 @@ def make_paraphrase_row(
     paraphrase_version: str = DEFAULT_PARAPHRASE_VERSION,
     prompt_version: str = DEFAULT_PROMPT_VERSION,
 ) -> dict[str, Any]:
-    metadata = dict(base_row["metadata"])
-    metadata["is_conflict"] = bool(base_row["metadata"]["is_conflict"])
-    metadata["BaseAuthoritySetting"] = base_row["AuthoritySetting"]
-    metadata["AttributeBase"] = base_row["Query"]
-    metadata["ParaphraseVersion"] = paraphrase_version
-    metadata["PromptVersion"] = prompt_version
-    metadata["BaseRowId"] = base_row["id"]
-
     return {
-        "id": row_id,
         "text": render_synthetic_paraphrase(base_row),
-        "AttributeCombination": base_row["Query"],
-        "Label": base_row["Label"],
-        "metadata": metadata,
+        "label": base_row["Label"],
+        "meta_data": {
+            "query": base_row["Query"],
+            "paraphrase_version": paraphrase_version,
+        },
     }
 
 
@@ -252,13 +247,38 @@ def _print_field_value_row(
         )
 
 
+def _row_metadata(row: dict[str, Any]) -> dict[str, Any]:
+    return row.get("meta_data") or row.get("metadata") or {}
+
+
+def _row_label(row: dict[str, Any]) -> str:
+    return row.get("label") or row.get("Label") or ""
+
+
+def _row_id(row: dict[str, Any]) -> object:
+    metadata = _row_metadata(row)
+    return metadata.get("RowId", row.get("id", ""))
+
+
+def _row_attribute_combination(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = _row_metadata(row)
+    return (
+        row.get("AttributeCombination")
+        or row.get("Query")
+        or metadata.get("query")
+        or metadata.get("AttributeBase")
+        or {}
+    )
+
+
 def _make_summary_table_row(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = _row_metadata(row)
     return {
-        "id": row["id"],
-        "label": row["Label"],
-        "conflict": row["metadata"]["is_conflict"],
+        "id": _row_id(row),
+        "label": _row_label(row),
+        "conflict": metadata.get("is_conflict", ""),
         "attribute_combination": json.dumps(
-            row["AttributeCombination"],
+            _row_attribute_combination(row),
             ensure_ascii=False,
             sort_keys=True,
         ),
@@ -292,19 +312,20 @@ def _print_full_table(rows: list[dict[str, Any]]) -> None:
     print("example | field                  | value")
     print("--------+------------------------+----------------------------------------")
     for row in rows:
-        example_id = row["id"]
-        _print_field_value_row(example_id, "id", row["id"])
-        _print_field_value_row(example_id, "label", row["Label"])
+        metadata = _row_metadata(row)
+        example_id = _row_id(row)
+        _print_field_value_row(example_id, "id", example_id)
+        _print_field_value_row(example_id, "label", _row_label(row))
         _print_field_value_row(
             example_id,
             "is_conflict",
-            row["metadata"]["is_conflict"],
+            metadata.get("is_conflict", ""),
         )
         _print_field_value_row(
             example_id,
             "AttributeCombination",
             json.dumps(
-                row["AttributeCombination"],
+                _row_attribute_combination(row),
                 ensure_ascii=False,
                 sort_keys=True,
             ),
@@ -314,10 +335,12 @@ def _print_full_table(rows: list[dict[str, Any]]) -> None:
             "metadata",
             json.dumps(
                 {
-                    "is_conflict": row["metadata"]["is_conflict"],
-                    "PromptVersion": row["metadata"]["PromptVersion"],
-                    "ParaphraseVersion": row["metadata"]["ParaphraseVersion"],
-                    "AttributeBase": row["metadata"]["AttributeBase"],
+                    "query": _row_attribute_combination(row),
+                    "paraphrase_version": metadata.get(
+                        "paraphrase_version",
+                        metadata.get("ParaphraseVersion"),
+                    ),
+                    "query_meaning_score": metadata.get("query_meaning_score"),
                 },
                 ensure_ascii=False,
                 sort_keys=True,

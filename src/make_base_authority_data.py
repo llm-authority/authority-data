@@ -18,8 +18,8 @@ from typing import Any, Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "base"
-GENERAL_AUTHORITY = "GeneralAuthority"
-TOOL_AUTHORITY = "ToolAuthority"
+GENERAL_AUTHORITY = "GeneralAuthorityV1"
+TOOL_AUTHORITY = "ToolAuthorityV1"
 DEFAULT_TRAIN_NUM_USERS = "1,2,3"
 DEFAULT_TEST_NUM_USERS = "1,2,3,4,5"
 
@@ -980,25 +980,25 @@ def parse_args() -> argparse.Namespace:
         "--general-train-rows",
         type=int,
         default=500,
-        help="Train rows to sample for GeneralAuthority.",
+        help="Train rows to sample for GeneralAuthorityV1.",
     )
     parser.add_argument(
         "--general-test-rows",
         type=int,
         default=1500,
-        help="Test rows to sample for GeneralAuthority.",
+        help="Test rows to sample for GeneralAuthorityV1.",
     )
     parser.add_argument(
         "--tool-train-rows",
         type=int,
         default=1000,
-        help="Train rows to sample for ToolAuthority.",
+        help="Train rows to sample for ToolAuthorityV1.",
     )
     parser.add_argument(
         "--tool-test-rows",
         type=int,
         default=3000,
-        help="Test rows to sample for ToolAuthority.",
+        help="Test rows to sample for ToolAuthorityV1.",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--test-ratio", type=float, default=0.2)

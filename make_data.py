@@ -1,4 +1,4 @@
-"""Run the base and synthetic paraphrase data builders."""
+"""Build structured base authority data."""
 
 from __future__ import annotations
 
@@ -14,24 +14,17 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.make_base_authority_data import (
     DEFAULT_OUTPUT_DIR as DEFAULT_BASE_OUTPUT_DIR,
+    GENERAL_AUTHORITY,
+    TOOL_AUTHORITY,
     generate_base_authority_datasets,
     resolve_max_rules_per_scenario,
     resolve_split_user_counts,
     write_dataset_splits,
 )
-from src.make_paraphrase_data import (
-    DEFAULT_OUTPUT_DIR as DEFAULT_PARAPHRASE_OUTPUT_DIR,
-    DEFAULT_PROMPT_VERSION,
-    DATASET_NAMES,
-    make_paraphrase_data,
-    print_paraphrase_examples_table,
-    read_jsonl,
-)
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build base authority data, synthetic paraphrases, and print previews."
+        description="Build structured base authority JSONL files."
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -49,15 +42,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--train-num-users",
-<<<<<<< HEAD
-        default="1,2,3",
-        help="Comma-separated user counts allowed in train. Defaults to --num-users.",
-    )
-    parser.add_argument(
-        "--test-num-users",
-        default="1,2,3,4,5",
-        help="Comma-separated user counts allowed in test. Defaults to --num-users.",
-=======
         default=None,
         help="Comma-separated user counts allowed in train. Default: 1,2,3.",
     )
@@ -65,7 +49,6 @@ def parse_args() -> argparse.Namespace:
         "--test-num-users",
         default=None,
         help="Comma-separated user counts allowed in test. Default: 1,2,3,4,5.",
->>>>>>> 588b05913c5a26cb8ad402185084b33bb5918d6a
     )
     parser.add_argument("--num-random-fills", type=int, default=2)
     parser.add_argument(
@@ -90,37 +73,28 @@ def parse_args() -> argparse.Namespace:
         "--general-train-rows",
         type=int,
         default=500,
-        help="Train rows to sample for GeneralAuthority.",
+        help="Train rows to sample for GeneralAuthorityV1.",
     )
     parser.add_argument(
         "--general-test-rows",
         type=int,
         default=1500,
-        help="Test rows to sample for GeneralAuthority.",
+        help="Test rows to sample for GeneralAuthorityV1.",
     )
     parser.add_argument(
         "--tool-train-rows",
         type=int,
         default=1000,
-        help="Train rows to sample for ToolAuthority.",
+        help="Train rows to sample for ToolAuthorityV1.",
     )
     parser.add_argument(
         "--tool-test-rows",
         type=int,
         default=3000,
-        help="Test rows to sample for ToolAuthority.",
+        help="Test rows to sample for ToolAuthorityV1.",
     )
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--base-output-dir", type=Path, default=DEFAULT_BASE_OUTPUT_DIR)
-    parser.add_argument(
-        "--paraphrase-output-dir",
-        type=Path,
-        default=DEFAULT_PARAPHRASE_OUTPUT_DIR,
-    )
-    parser.add_argument("--paraphrase-version", default="synthetic_v1")
-    parser.add_argument("--prompt-version", default=DEFAULT_PROMPT_VERSION)
-    parser.add_argument("--num-table-examples", type=int, default=5)
-    parser.add_argument("--num-full-examples", type=int, default=1)
     return parser.parse_args()
 
 
@@ -138,7 +112,7 @@ def main() -> None:
         test_user_counts=test_user_counts,
     )
 
-    print("[1] Build base authority data")
+    print("Build base authority data")
     datasets, base_counts = generate_base_authority_datasets(
         seed=args.seed,
         num_categories=args.num_categories,
@@ -158,42 +132,16 @@ def main() -> None:
         train_rows_per_dataset=args.train_rows_per_dataset,
         test_rows_per_dataset=args.test_rows_per_dataset,
         train_rows_by_dataset={
-            "GeneralAuthority": args.general_train_rows,
-            "ToolAuthority": args.tool_train_rows,
+            GENERAL_AUTHORITY: args.general_train_rows,
+            TOOL_AUTHORITY: args.tool_train_rows,
         },
         test_rows_by_dataset={
-            "GeneralAuthority": args.general_test_rows,
-            "ToolAuthority": args.tool_test_rows,
+            GENERAL_AUTHORITY: args.general_test_rows,
+            TOOL_AUTHORITY: args.tool_test_rows,
         },
         seed=args.seed,
     )
     print(json.dumps(base_counts, indent=2, ensure_ascii=False))
-    print()
-
-    print("[2] Build synthetic paraphrase data")
-    paraphrase_counts = make_paraphrase_data(
-        input_dir=args.base_output_dir,
-        output_dir=args.paraphrase_output_dir,
-        paraphrase_version=args.paraphrase_version,
-        prompt_version=args.prompt_version,
-    )
-    print(json.dumps(paraphrase_counts, indent=2, ensure_ascii=False))
-    print()
-
-    print("[3] Preview final data")
-    for dataset_name in DATASET_NAMES:
-        if dataset_name not in paraphrase_counts:
-            continue
-        path = args.paraphrase_output_dir / dataset_name / "train.jsonl"
-        if not path.exists():
-            continue
-        print_paraphrase_examples_table(
-            dataset_name,
-            read_jsonl(path),
-            num_table_examples=args.num_table_examples,
-            num_full_examples=args.num_full_examples,
-        )
-        print()
 
 
 if __name__ == "__main__":

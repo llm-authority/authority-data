@@ -61,11 +61,19 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def authority_setting(row: dict[str, Any]) -> dict[str, Any]:
-    return row.get("AuthoritySetting") or row.get("metadata", {}).get("BaseAuthoritySetting", {})
+    metadata = row.get("meta_data") or row.get("metadata") or {}
+    return row.get("AuthoritySetting") or metadata.get("BaseAuthoritySetting", {})
 
 
 def query_attributes(row: dict[str, Any]) -> dict[str, Any]:
-    query = row.get("AttributeCombination") or row.get("Query") or {}
+    metadata = row.get("meta_data") or row.get("metadata") or {}
+    query = (
+        row.get("AttributeCombination")
+        or row.get("Query")
+        or metadata.get("query")
+        or metadata.get("AttributeBase")
+        or {}
+    )
     return query.get("attributes") or {}
 
 
@@ -103,12 +111,12 @@ if not rows:
 
 rng = random.Random(int(seed_arg)) if seed_arg else random.SystemRandom()
 row = rng.choice(rows)
-metadata = row.get("metadata") or {}
+metadata = row.get("meta_data") or row.get("metadata") or {}
 priority = metadata.get("priority") or []
 users = user_authority_map(row)
 top_user = priority[0] if priority else ""
 top_authority = users.get(top_user, "")
-label = row.get("Label", "")
+label = row.get("label") or row.get("Label", "")
 label_color = GREEN if label == "Yes" else YELLOW
 conflict = bool(metadata.get("is_conflict", False))
 conflict_color = RED if conflict else GREEN

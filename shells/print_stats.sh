@@ -3,9 +3,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA_DIR="${DATA_DIR:-$ROOT_DIR/data/paraphrase}"
+CACHE_DIR="${CACHE_DIR:-$ROOT_DIR/data/paraphrase_cache}"
+DATA_DIR="${DATA_DIR:-$ROOT_DIR/data/base}"
 
-python - "$DATA_DIR" <<'PY'
+python - "$DATA_DIR" "$CACHE_DIR" <<'PY'
 from __future__ import annotations
 
 import json
@@ -18,7 +19,8 @@ from typing import Any
 
 
 data_dir = Path(sys.argv[1])
-paths = sorted(data_dir.glob("*/*.jsonl"))
+cache_dir = Path(sys.argv[2])
+paths = sorted({*data_dir.glob("*.jsonl"), *data_dir.glob("*/*.jsonl")})
 USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
 
 
@@ -56,6 +58,10 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
     return rows
+
+
+def jsonl_paths(path: Path) -> list[Path]:
+    return sorted({*path.glob("*.jsonl"), *path.glob("*/*.jsonl")})
 
 
 def pct(count: int, total: int) -> str:
@@ -106,6 +112,14 @@ def numeric_summary(values: list[int]) -> str:
     )
 
 
+def numeric_mean_variance(values: list[float]) -> tuple[str, str]:
+    if not values:
+        return "n/a", "n/a"
+    mean = statistics.mean(values)
+    variance = statistics.pvariance(values)
+    return f"{mean:.4f}", f"{variance:.4f}"
+
+
 def metric_line(name: str, value: str) -> None:
     print(f"  {color((name + ':').ljust(26), DIM)} {value}")
 
@@ -145,16 +159,28 @@ def authority_setting(row: dict[str, Any]) -> dict[str, Any]:
     setting = row.get("AuthoritySetting")
     if setting:
         return setting
-    return row.get("metadata", {}).get("BaseAuthoritySetting", {})
+    metadata = row.get("meta_data") or row.get("metadata") or {}
+    return metadata.get("BaseAuthoritySetting", {})
 
 
 def query_attributes(row: dict[str, Any]) -> dict[str, Any]:
-    query = row.get("AttributeCombination") or row.get("Query") or {}
+    query = query_object(row)
     return query.get("attributes") or {}
 
 
+def query_object(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("meta_data") or row.get("metadata") or {}
+    return (
+        row.get("AttributeCombination")
+        or row.get("Query")
+        or metadata.get("query")
+        or metadata.get("AttributeBase")
+        or {}
+    )
+
+
 def query_tool(row: dict[str, Any]) -> str:
-    query = row.get("AttributeCombination") or row.get("Query") or {}
+    query = query_object(row)
     tool = query.get("tool")
     if tool:
         return str(tool)
@@ -163,8 +189,49 @@ def query_tool(row: dict[str, Any]) -> str:
     return str(tool) if tool else ""
 
 
+def evaluation_score(row: dict[str, Any]) -> int | None:
+    metadata = row.get("meta_data") or row.get("metadata") or {}
+    candidates = [
+        row.get("evaluation_score"),
+        row.get("query_meaning_score"),
+        metadata.get("query_meaning_score"),
+        metadata.get("evaluation_score"),
+    ]
+    evaluation = row.get("evaluation") or metadata.get("evaluation")
+    if isinstance(evaluation, dict):
+        candidates.append(evaluation.get("score"))
+    elif evaluation is not None:
+        candidates.append(evaluation)
+
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            score = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if score in {0, 1}:
+            return score
+    return None
+
+
+def compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def cache_input_text(row: dict[str, Any]) -> str:
+    query = query_object(row)
+    payload: dict[str, Any] = {
+        "query_conditions": query.get("attributes", {}),
+    }
+    tool = query.get("tool")
+    if tool:
+        payload["tool"] = tool
+    return compact_json(payload)
+
+
 def row_stats(row: dict[str, Any]) -> dict[str, Any]:
-    metadata = row.get("metadata") or {}
+    metadata = row.get("meta_data") or row.get("metadata") or {}
     setting = authority_setting(row)
     users = setting.get("users") or []
     attrs = query_attributes(row)
@@ -183,7 +250,7 @@ def row_stats(row: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "text": row.get("text", ""),
-        "label": row.get("Label", ""),
+        "label": row.get("label") or row.get("Label", ""),
         "is_conflict": bool(metadata.get("is_conflict", False)),
         "user_count": len(users),
         "priority_depth": len(priority),
@@ -197,9 +264,30 @@ def row_stats(row: dict[str, Any]) -> dict[str, Any]:
         "total_rules": total_rules,
         "rules_per_user_min": min(rules_per_user) if rules_per_user else 0,
         "rules_per_user_max": max(rules_per_user) if rules_per_user else 0,
-        "label_matches_top": row.get("Label", "").lower() == top_authority,
+        "eval_score": evaluation_score(row),
+        "label_matches_top": (row.get("label") or row.get("Label", "")).lower()
+        == top_authority,
         "target_matches_top": not target_user or target_user == top_priority_user,
     }
+
+
+def load_eval_cache(cache_paths: list[Path]) -> dict[tuple[str, str], int]:
+    cache: dict[tuple[str, str], int] = {}
+    for path in cache_paths:
+        for row in read_jsonl(path):
+            input_text = row.get("input_text")
+            version = row.get("paraphrase_version")
+            score = evaluation_score(row)
+            if input_text is None or version is None or score is None:
+                continue
+            cache[(str(input_text), str(version))] = score
+    return cache
+
+
+def paraphrase_dataset_name(dataset: str, version: str) -> str:
+    if version == "v1":
+        return dataset
+    return f"{dataset}-Paraphrase"
 
 
 def print_table(rows: list[list[str]], *, title: str) -> None:
@@ -223,11 +311,149 @@ def print_table(rows: list[list[str]], *, title: str) -> None:
     print()
 
 
+def cache_group_name(path: Path, root: Path) -> tuple[str, str]:
+    dataset = path.parent.name if path.parent != root else root.name
+    return dataset, path.stem
+
+
+def print_eval_cache_summary(cache_paths: list[Path], *, title: str) -> None:
+    if not cache_paths:
+        return
+
+    rows = [
+        [
+            "dataset",
+            "split",
+            "rows",
+            "eval count",
+            "eval 1",
+            "eval 0",
+            "eval avg",
+            "eval var",
+        ]
+    ]
+    all_scores: list[int] = []
+    for path in cache_paths:
+        dataset, split = cache_group_name(path, cache_dir)
+        cache_rows = read_jsonl(path)
+        scores = [
+            score
+            for score in (evaluation_score(row) for row in cache_rows)
+            if score is not None
+        ]
+        all_scores.extend(scores)
+        eval_avg, eval_var = numeric_mean_variance(scores)
+        rows.append(
+            [
+                dataset,
+                split,
+                str(len(cache_rows)),
+                str(len(scores)),
+                str(sum(score == 1 for score in scores)),
+                str(sum(score == 0 for score in scores)),
+                eval_avg,
+                eval_var,
+            ]
+        )
+
+    if len(cache_paths) > 1:
+        eval_avg, eval_var = numeric_mean_variance(all_scores)
+        rows.append(
+            [
+                "overall",
+                "-",
+                str(sum(int(row[2]) for row in rows[1:])),
+                str(len(all_scores)),
+                str(sum(score == 1 for score in all_scores)),
+                str(sum(score == 0 for score in all_scores)),
+                eval_avg,
+                eval_var,
+            ]
+        )
+
+    section(title)
+    print_table(rows, title=color("Evaluation scores from paraphrase cache", DIM))
+
+
+def print_eval_by_split_summary(
+    data_paths: list[Path],
+    cache_paths: list[Path],
+    *,
+    title: str,
+) -> None:
+    if not data_paths or not cache_paths:
+        return
+
+    cache = load_eval_cache(cache_paths)
+    versions = sorted({version for _, version in cache})
+    if not versions:
+        return
+
+    rows = [
+        [
+            "dataset",
+            "split",
+            "base rows",
+            "eval count",
+            "eval 1",
+            "eval 0",
+            "missing",
+            "V2 rows",
+            "eval avg",
+            "eval var",
+        ]
+    ]
+    for version in versions:
+        for path in data_paths:
+            dataset = path.parent.name if path.parent != data_dir else data_dir.name
+            split = path.stem
+            data_rows = read_jsonl(path)
+            scores = []
+            missing = 0
+            for row in data_rows:
+                key = (cache_input_text(row), version)
+                score = cache.get(key)
+                if score is None:
+                    missing += 1
+                    continue
+                scores.append(score)
+            if not scores and missing == 0:
+                continue
+
+            eval_avg, eval_var = numeric_mean_variance(scores)
+            rows.append(
+                [
+                    paraphrase_dataset_name(dataset, version),
+                    split,
+                    str(len(data_rows)),
+                    str(len(scores)),
+                    str(sum(score == 1 for score in scores)),
+                    str(sum(score == 0 for score in scores)),
+                    str(missing),
+                    str(sum(score == 1 for score in scores)),
+                    eval_avg,
+                    eval_var,
+                ]
+            )
+
+    if len(rows) == 1:
+        return
+
+    section(title)
+    print_table(
+        rows,
+        title=color(
+            "Evaluation scores applied to each V1 split; V2 rows keep eval=1 only",
+            DIM,
+        ),
+    )
+
+
 def choose_prompt_example(
     dataset: str,
     all_groups: dict[tuple[str, str], list[dict[str, Any]]],
 ) -> tuple[str, dict[str, Any] | None]:
-    preferred_user_count = 2 if dataset == "ToolAuthority" else None
+    preferred_user_count = 2 if dataset.startswith("ToolAuthority") else None
 
     if preferred_user_count is not None:
         for split in ("train", "test"):
@@ -245,22 +471,42 @@ def choose_prompt_example(
 
 all_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
 for path in paths:
-    dataset = path.parent.name
+    dataset = path.parent.name if path.parent != data_dir else data_dir.name
     split = path.stem
     all_groups[(dataset, split)] = [row_stats(row) for row in read_jsonl(path)]
 
 
 section("Authority Data Stats")
 print(f"{color('data_dir:', DIM)} {data_dir}")
+print(f"{color('cache_dir:', DIM)} {cache_dir}")
 print()
 
-compact_rows = [["dataset", "split", "rows", "Yes", "No", "conflict", "users", "rules avg"]]
+compact_rows = [
+    [
+        "dataset",
+        "split",
+        "rows",
+        "Yes",
+        "No",
+        "conflict",
+        "users",
+        "rules avg",
+        "eval avg",
+        "eval var",
+    ]
+]
 for (dataset, split), stats in sorted(all_groups.items()):
     total = len(stats)
     labels = Counter(row["label"] for row in stats)
     conflict = Counter(row["is_conflict"] for row in stats)
     users = Counter(row["user_count"] for row in stats)
     rules = [row["total_rules"] for row in stats]
+    eval_scores = [
+        row["eval_score"]
+        for row in stats
+        if row["eval_score"] is not None
+    ]
+    eval_avg, eval_var = numeric_mean_variance(eval_scores)
     compact_rows.append(
         [
             dataset,
@@ -271,10 +517,15 @@ for (dataset, split), stats in sorted(all_groups.items()):
             f"{conflict[True]} ({pct(conflict[True], total)})",
             ", ".join(f"{key}:{users[key]}" for key in sorted(users)),
             f"{statistics.mean(rules):.2f}" if rules else "n/a",
+            eval_avg,
+            eval_var,
         ]
     )
 section("Split Summary")
-print_table(compact_rows, title=color("Rows, labels, conflicts, users, and rule counts", DIM))
+print_table(
+    compact_rows,
+    title=color("Rows, labels, conflicts, users, rule counts, and eval scores", DIM),
+)
 
 section("Category Combinations")
 for dataset in sorted({dataset for dataset, _ in all_groups}):
@@ -381,4 +632,17 @@ if len(all_groups) > 1:
     )
     metric_line("total_rules", numeric_summary([row["total_rules"] for row in combined]))
     metric_line("query_k", numeric_summary([row["query_k"] for row in combined]))
+    eval_scores = [
+        row["eval_score"]
+        for row in combined
+        if row["eval_score"] is not None
+    ]
+    eval_avg, eval_var = numeric_mean_variance(eval_scores)
+    metric_line("eval_score_count", str(len(eval_scores)))
+    metric_line("eval_score_avg", eval_avg)
+    metric_line("eval_score_var", eval_var)
+
+cache_paths = jsonl_paths(cache_dir) if cache_dir.exists() else []
+print_eval_by_split_summary(paths, cache_paths, title="Eval Scores By Split")
+print_eval_cache_summary(cache_paths, title="Eval Cache Summary")
 PY

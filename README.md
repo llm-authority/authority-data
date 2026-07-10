@@ -7,19 +7,19 @@ The Hugging Face dataset is organized as one repo with multiple configs:
 
 | Config | Splits | Description |
 | --- | --- | --- |
-| `GeneralAuthority` | `train`, `test` | Authority rules over request attributes. |
-| `ToolAuthority` | `train`, `test` | Authority rules for whether a requested tool use is allowed under recipient, information, and purpose conditions. |
+| `GeneralAuthorityV1` | `train`, `test` | General authority rules with deterministic query rendering. |
+| `GeneralAuthorityV2` | `train`, `test` | General authority rules with LLM query paraphrases. |
+| `ToolAuthorityV1` | `train`, `test` | Tool authority rules with deterministic query rendering. |
+| `ToolAuthorityV2` | `train`, `test` | Tool authority rules with LLM query paraphrases. |
 
 
 Each final row has this shape:
 
 | Column | Description |
 | --- | --- |
-| `id` | Split-local row id. |
 | `text` | Natural-language authority setting and query. |
-| `AttributeCombination` | Structured query attributes. |
-| `Label` | Gold decision, `Yes` or `No`. |
-| `metadata` | Categories, priority order, conflict flag, base authority setting, source ids, and prompt/paraphrase versions. |
+| `label` | Gold decision, `Yes` or `No`. |
+| `meta_data` | Structured query, paraphrase version, and query-meaning score for LLM paraphrases. |
 
 ## Layout
 
@@ -39,14 +39,70 @@ authority-data/
     paraphrase/
 ```
 
-`make_data.py` builds structured base rows first, then renders the final
-paraphrased JSONL files under `data/paraphrase/`.
+`make_data.py` builds structured base rows under `data/base/`.
+
+`paraphrase_data.py` can replace the deterministic query rendering with
+LLM-generated natural query paraphrases. The LLM receives only an instruction
+and the structured query conditions, then a second LLM call scores whether the
+natural query preserves the structured condition meaning with `0` or `1`.
 
 ## Build
 
 ```bash
 python make_data.py
 ```
+
+This creates structured base rows. Generate query paraphrase cache rows with
+`paraphrase_data.py`; `hf_push.py` applies those cached paraphrases at push time.
+
+## LLM Query Paraphrases
+
+```bash
+export OPENAI_API_KEY=...
+python paraphrase_data.py --dry-run
+python paraphrase_data.py --limit 10
+```
+
+The default LLM paraphrase version is `v2`, and the default model is
+`gpt-5.4-mini`. The script records generation/evaluation usage and estimates
+cost using input `$0.75`, cached input `$0.075`, and output `$4.50` per 1M
+tokens.
+
+LLM paraphrases are cached locally under `data/paraphrase_cache/<version>.jsonl`.
+The cache key is only `input_text` plus `paraphrase_version`. `hf_push.py` loads
+the base splits and replaces the original `Query` block with the cached
+generated text at push time for V2 configs. By default, it pushes four Hugging
+Face configs: `GeneralAuthorityV1`, `GeneralAuthorityV2`, `ToolAuthorityV1`,
+and `ToolAuthorityV2`. The V2 configs are built from the matching V1 local base
+directories.
+
+Each cache row keeps only the fields needed to replace the query block:
+
+```json
+{
+  "input_text": "{\"query_conditions\":{\"day\":\"wednesday\"}}",
+  "paraphrase_version": "v2",
+  "generated_text": "Action on Wednesday.",
+  "evaluation_score": 1
+}
+```
+
+The normal full workflow is:
+
+```bash
+python make_data.py
+python paraphrase_data.py
+python hf_push.py
+```
+
+For V2 uploads, `hf_push.py` pushes only rows that already have matching cache
+entries and an evaluation score of `1`; rows with score `0` are skipped and
+reported. Use `--strict-cache` when every base row must have a paraphrase before
+pushing.
+
+Generation uses a `tqdm` progress bar. Cache rows are appended as soon as each
+example finishes, so an interrupted run resumes from the first missing cache
+entry.
 
 Useful smaller local run:
 
@@ -66,6 +122,14 @@ python hf_push.py --dry-run
 python hf_push.py
 ```
 
+To remove old/wrong remote config folders such as `GeneralAuthority`,
+`ToolAuthority`, `V1`, and `V2` before pushing:
+
+```bash
+python hf_push.py --delete-remote-configs --dry-run
+python hf_push.py --delete-remote-configs
+```
+
 To push privately or with an explicit token:
 
 ```bash
@@ -77,10 +141,12 @@ python hf_push.py --private --token "$HF_TOKEN"
 ```python
 from datasets import load_dataset
 
-general = load_dataset("leo-bjpark/authority", "GeneralAuthority")
-tool = load_dataset("leo-bjpark/authority", "ToolAuthority")
+general_v1 = load_dataset("leo-bjpark/authority", "GeneralAuthorityV1")
+general_v2 = load_dataset("leo-bjpark/authority", "GeneralAuthorityV2")
+tool_v1 = load_dataset("leo-bjpark/authority", "ToolAuthorityV1")
+tool_v2 = load_dataset("leo-bjpark/authority", "ToolAuthorityV2")
 
-print(general["train"][0])
+print(general_v2["train"][0])
 ```
 
 ## Generation Flow
