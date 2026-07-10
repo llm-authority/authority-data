@@ -19,17 +19,14 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "base"
 GENERAL_AUTHORITY = "GeneralAuthority"
-<<<<<<< HEAD
 TOOL_AUTHORITY = "ToolAuthority"
-=======
 DEFAULT_TRAIN_NUM_USERS = "1,2,3"
 DEFAULT_TEST_NUM_USERS = "1,2,3,4,5"
->>>>>>> 588b05913c5a26cb8ad402185084b33bb5918d6a
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.category_sampling import category_sampling
+from src.category_sampling import category_sampling, make_category_combinations
 from src.domains import (
     ALL_TOOL_NAMES,
     DEFAULT_CATEGORIES,
