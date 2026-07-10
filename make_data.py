@@ -48,12 +48,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--train-num-users",
-        default=None,
+        default="1,2,3",
         help="Comma-separated user counts allowed in train. Defaults to --num-users.",
     )
     parser.add_argument(
         "--test-num-users",
-        default=None,
+        default="1,2,3,4,5",
         help="Comma-separated user counts allowed in test. Defaults to --num-users.",
     )
     parser.add_argument("--num-random-fills", type=int, default=2)

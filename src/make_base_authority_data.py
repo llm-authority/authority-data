@@ -11,6 +11,7 @@ import json
 import random
 import sys
 from collections import Counter
+from itertools import combinations, product
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -18,16 +19,22 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "base"
 GENERAL_AUTHORITY = "GeneralAuthority"
+TOOL_AUTHORITY = "ToolAuthority"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.attribute_sampling import attribute_sampling
 from src.category_sampling import category_sampling, make_category_combinations
-from src.domains import DEFAULT_CATEGORIES
+from src.domains import DEFAULT_CATEGORIES, TOOL_AUTHORITY_CATEGORIES, CategoryValues
 from src.label_based_polarity_sampling import (
+    POLARITIES,
+    USER_IDS,
     deduplicate_rows,
+    label_items,
     make_rows,
+    make_case_specs,
+    make_selected_labels,
     parse_user_counts,
     polarity_sampling,
 )
@@ -61,6 +68,233 @@ def _sample_expanded_authority_data(
         rng=rng,
     )
     expanded_samples = polarity_sampling(
+        attribute_samples,
+        num_users=num_users,
+        num_random_fills=num_random_fills,
+        rng=rng,
+    )
+    rule_limited_samples = [
+        sample
+        for sample in expanded_samples
+        if max_rules_per_scenario is None
+        or count_scenario_rules(sample["authority_setting"])
+        <= max_rules_per_scenario
+    ]
+
+    counts = {
+        "category_candidates": len(category_combinations),
+        "sampled_categories": len(sampled_categories),
+        "attribute_samples": len(attribute_samples),
+        "polarity_expanded_samples": len(expanded_samples),
+        "rule_limited_samples": len(rule_limited_samples),
+        "dropped_by_rule_limit": len(expanded_samples) - len(rule_limited_samples),
+    }
+    return rule_limited_samples, counts
+
+
+def make_multi_category_combinations(
+    categories: CategoryValues,
+) -> list[dict[str, Any]]:
+    """Build one-category-per-axis combinations for multi-attribute authority."""
+
+    category_combinations: list[dict[str, Any]] = []
+    axes = list(categories.items())
+
+    for axis_options in product(*(axis_options.items() for _, axis_options in axes)):
+        category_names = [category_name for category_name, _ in axis_options]
+        candidates_by_category = {
+            category_name: list(values)
+            for category_name, values in axis_options
+        }
+        category_combinations.append(
+            {
+                "category_axes": [axis for axis, _ in axes],
+                "categories": category_names,
+                "candidates_by_category": candidates_by_category,
+            }
+        )
+
+    return category_combinations
+
+
+def multi_attribute_sampling(
+    categories: list[dict[str, Any]],
+    max_k_pairs_per_category: int = 10,
+    num_samples_per_k_pair: int = 10,
+    rng: random.Random | None = None,
+) -> list[dict[str, Any]]:
+    """Sample attribute subsets for category combinations with 3+ categories."""
+
+    rng = rng or random
+    results: list[dict[str, Any]] = []
+
+    for category_idx, category in enumerate(categories):
+        category_names = list(category["categories"])
+        candidates_by_category = {
+            name: list(category["candidates_by_category"][name])
+            for name in category_names
+        }
+        possible_k_tuples = list(
+            product(
+                *(
+                    range(1, len(candidates_by_category[name]) + 1)
+                    for name in category_names
+                )
+            )
+        )
+        sampled_k_tuples = rng.sample(
+            possible_k_tuples,
+            k=min(max_k_pairs_per_category, len(possible_k_tuples)),
+        )
+
+        for k_pair_idx, k_tuple in enumerate(sampled_k_tuples):
+            possible_samples_by_category = [
+                list(combinations(candidates_by_category[name], k))
+                for name, k in zip(category_names, k_tuple)
+            ]
+            possible_attribute_samples = list(product(*possible_samples_by_category))
+            sampled_attributes = rng.sample(
+                possible_attribute_samples,
+                k=min(num_samples_per_k_pair, len(possible_attribute_samples)),
+            )
+
+            for sample_idx, sampled_values in enumerate(sampled_attributes):
+                category_values = {
+                    name: list(values)
+                    for name, values in zip(category_names, sampled_values)
+                }
+                results.append(
+                    {
+                        "category_idx": category_idx,
+                        "k_pair_idx": k_pair_idx,
+                        "sample_idx": sample_idx,
+                        "category_axes": category["category_axes"],
+                        "categories": category_names,
+                        "category_ks": dict(zip(category_names, k_tuple)),
+                        "category_candidates": candidates_by_category,
+                        "category_values": category_values,
+                    }
+                )
+
+    return results
+
+
+def polarity_sampling_multi(
+    samples: list[dict[str, Any]],
+    num_users: int | str | Iterable[int] = (1, 2, 3, 4),
+    num_random_fills: int = 2,
+    rng: random.Random | None = None,
+) -> list[dict[str, Any]]:
+    """Expand multi-attribute samples into priority-aware yes/no cases."""
+
+    rng = rng or random
+    user_counts = parse_user_counts(num_users)
+    results: list[dict[str, Any]] = []
+
+    for row_idx, sample in enumerate(samples):
+        category_values = {
+            category: list(values)
+            for category, values in sample["category_values"].items()
+        }
+        selected_attributes = {
+            category: rng.choice(values)
+            for category, values in category_values.items()
+        }
+        case_specs = make_case_specs(user_counts, rng=rng)
+
+        for case_id, (user_count, target_label, has_conflict) in enumerate(case_specs):
+            user_ids = list(USER_IDS[:user_count])
+            for random_fill_idx in range(num_random_fills):
+                priority = rng.sample(user_ids, k=len(user_ids))
+                target_user = priority[0]
+                selected_labels = make_selected_labels(
+                    user_ids=user_ids,
+                    priority=priority,
+                    target_label=target_label,
+                    has_conflict=has_conflict,
+                    rng=rng,
+                )
+                authority_setting = []
+
+                for user_id in user_ids:
+                    selected_label = selected_labels[user_id]
+                    rules = []
+                    for category, values in category_values.items():
+                        rules.extend(
+                            {
+                                "category": category,
+                                "value": value,
+                                "label": label,
+                            }
+                            for value, label in label_items(
+                                values,
+                                selected_attributes[category],
+                                selected_label,
+                                rng=rng,
+                            )
+                        )
+                    authority_setting.append(
+                        {
+                            "user": user_id,
+                            "authority": selected_label,
+                            "rules": rules,
+                        }
+                    )
+
+                results.append(
+                    {
+                        "original_row_idx": row_idx,
+                        "category_idx": sample["category_idx"],
+                        "k_pair_idx": sample["k_pair_idx"],
+                        "sample_idx": sample["sample_idx"],
+                        "case_id": case_id,
+                        "random_fill_idx": random_fill_idx,
+                        "user_count": user_count,
+                        "target_user": target_user,
+                        "target_label": target_label,
+                        "category_axes": sample["category_axes"],
+                        "categories": sample["categories"],
+                        "category_candidates": sample["category_candidates"],
+                        "category_ks": sample["category_ks"],
+                        "category_values": category_values,
+                        "user1_selected": {"attributes": selected_attributes},
+                        "authority_setting": authority_setting,
+                        "priority": priority,
+                        "label": target_label,
+                        "user_conflict": "yes" if has_conflict else "no",
+                    }
+                )
+
+    return results
+
+
+def _sample_expanded_tool_authority_data(
+    *,
+    seed: int = 42,
+    num_categories: int | None = None,
+    max_k_pairs_per_category: int = 10,
+    num_samples_per_k_pair: int = 10,
+    num_users: int | str | Iterable[int] = (1, 2, 3, 4),
+    num_random_fills: int = 2,
+    max_rules_per_scenario: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if max_rules_per_scenario is not None and max_rules_per_scenario < 1:
+        raise ValueError("max_rules_per_scenario must be at least 1")
+
+    rng = random.Random(seed)
+    category_combinations = make_multi_category_combinations(TOOL_AUTHORITY_CATEGORIES)
+    sampled_categories = category_sampling(
+        category_combinations,
+        n=num_categories,
+        rng=rng,
+    )
+    attribute_samples = multi_attribute_sampling(
+        sampled_categories,
+        max_k_pairs_per_category=max_k_pairs_per_category,
+        num_samples_per_k_pair=num_samples_per_k_pair,
+        rng=rng,
+    )
+    expanded_samples = polarity_sampling_multi(
         attribute_samples,
         num_users=num_users,
         num_random_fills=num_random_fills,
@@ -152,6 +386,9 @@ def _rules_with_categories(
     sample: dict[str, Any],
     setting: dict[str, Any],
 ) -> list[dict[str, str]]:
+    if setting["rules"] and isinstance(setting["rules"][0], dict):
+        return [dict(rule) for rule in setting["rules"]]
+
     front_count = len(sample["original_front"])
     rules = []
 
@@ -199,6 +436,12 @@ def make_attribute_combination(
     *,
     tool_name: str | None = None,
 ) -> dict[str, Any]:
+    if "attributes" in sample["user1_selected"]:
+        query = {"attributes": dict(sample["user1_selected"]["attributes"])}
+        if tool_name is not None:
+            query["tool"] = tool_name
+        return query
+
     query: dict[str, Any] = {
         "attributes": {
             sample["front_category"]: sample["user1_selected"]["front"],
@@ -320,9 +563,24 @@ def generate_base_authority_datasets(
         num_random_fills=num_random_fills,
         max_rules_per_scenario=max_rules_per_scenario,
     )
+    expanded_tool_samples, tool_sampling_counts = _sample_expanded_tool_authority_data(
+        seed=seed + 1000,
+        num_categories=num_categories,
+        max_k_pairs_per_category=max_k_pairs_per_category,
+        num_samples_per_k_pair=num_samples_per_k_pair,
+        num_users=num_users,
+        num_random_fills=num_random_fills,
+        max_rules_per_scenario=max_rules_per_scenario,
+    )
 
     datasets: dict[str, list[dict[str, Any]]] = {}
-    counts: dict[str, Any] = {"sampling": sampling_counts, "datasets": {}}
+    counts: dict[str, Any] = {
+        "sampling": {
+            GENERAL_AUTHORITY: sampling_counts,
+            TOOL_AUTHORITY: tool_sampling_counts,
+        },
+        "datasets": {},
+    }
 
     rows = [
         make_base_row(sample, dataset_name=GENERAL_AUTHORITY)
@@ -335,6 +593,19 @@ def generate_base_authority_datasets(
         "rows": len(deduplicated),
         "dropped_duplicates": len(rows) - len(deduplicated),
         "distribution": summarize_base_rows(deduplicated),
+    }
+
+    tool_rows = [
+        make_base_row(sample, dataset_name=TOOL_AUTHORITY)
+        for sample in expanded_tool_samples
+    ]
+    tool_deduplicated = deduplicate_base_rows(tool_rows)
+    datasets[TOOL_AUTHORITY] = add_row_ids(tool_deduplicated)
+    counts["datasets"][TOOL_AUTHORITY] = {
+        "rows_before_deduplication": len(tool_rows),
+        "rows": len(tool_deduplicated),
+        "dropped_duplicates": len(tool_rows) - len(tool_deduplicated),
+        "distribution": summarize_base_rows(tool_deduplicated),
     }
 
     return datasets, counts

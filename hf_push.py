@@ -17,7 +17,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_REPO_ID = "leo-bjpark/authority"
 DEFAULT_DATA_DIR = REPO_ROOT / "data" / "paraphrase"
-DEFAULT_CONFIGS = ("GeneralAuthority",)
+DEFAULT_CONFIGS = ("GeneralAuthority", "ToolAuthority")
 DEFAULT_SPLITS = ("train", "test")
 
 

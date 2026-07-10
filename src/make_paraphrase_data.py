@@ -14,7 +14,7 @@ DEFAULT_INPUT_DIR = REPO_ROOT / "data" / "base"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "paraphrase"
 DEFAULT_PARAPHRASE_VERSION = "synthetic_v1"
 DEFAULT_PROMPT_VERSION = "synthetic_prompt_v1"
-DATASET_NAMES = ("GeneralAuthority",)
+DATASET_NAMES = ("GeneralAuthority", "ToolAuthority")
 SPLIT_NAMES = ("train", "test")
 
 

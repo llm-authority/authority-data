@@ -3,11 +3,13 @@
 Synthetic authority-decision datasets for testing whether a model can follow
 priority-ordered allow/disallow rules.
 
-The Hugging Face dataset is organized as one repo with one config:
+The Hugging Face dataset is organized as one repo with multiple configs:
 
 | Config | Splits | Description |
 | --- | --- | --- |
 | `GeneralAuthority` | `train`, `test` | Authority rules over request attributes. |
+| `ToolAuthority` | `train`, `test` | Tool-dependent authority rules over `tool`, `information_action`, and `information_type`. |
+
 
 Each final row has this shape:
 
@@ -76,14 +78,15 @@ python hf_push.py --private --token "$HF_TOKEN"
 from datasets import load_dataset
 
 general = load_dataset("leo-bjpark/authority", "GeneralAuthority")
+tool = load_dataset("leo-bjpark/authority", "ToolAuthority")
 
 print(general["train"][0])
 ```
 
 ## Generation Flow
 
-1. Sample category pairs and attribute combinations.
+1. Sample category pairs or tool/action/information-type combinations.
 2. Expand them into priority-ordered user authority rules.
-3. Split `GeneralAuthority` into `train` and `test`.
+3. Split each dataset config into `train` and `test`.
 4. Render each structured authority setting into `text`.
-5. Push `GeneralAuthority` to Hugging Face.
+5. Push the dataset configs to Hugging Face.
