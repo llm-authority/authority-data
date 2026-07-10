@@ -19,12 +19,9 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "base"
 GENERAL_AUTHORITY = "GeneralAuthority"
-<<<<<<< HEAD
 TOOL_AUTHORITY = "ToolAuthority"
-=======
 DEFAULT_TRAIN_NUM_USERS = "1,2,3"
 DEFAULT_TEST_NUM_USERS = "1,2,3,4,5"
->>>>>>> 588b05913c5a26cb8ad402185084b33bb5918d6a
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -423,14 +420,12 @@ def resolve_split_user_counts(
     return train_counts, test_counts, generation_counts
 
 
-def max_rules_per_user() -> int:
+def max_rules_per_user(
+    categories: CategoryValues = DEFAULT_CATEGORIES,
+) -> int:
     """Return the largest number of attribute rules one user can receive."""
 
-    return max(
-        len(category_pair["front_candidates"])
-        + len(category_pair["back_candidates"])
-        for category_pair in make_category_combinations(DEFAULT_CATEGORIES)
-    )
+    return sum(len(values) for values in categories.values())
 
 
 def resolve_max_rules_per_scenario(
