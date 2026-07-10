@@ -19,7 +19,12 @@ from typing import Any, Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "base"
 GENERAL_AUTHORITY = "GeneralAuthority"
+<<<<<<< HEAD
 TOOL_AUTHORITY = "ToolAuthority"
+=======
+DEFAULT_TRAIN_NUM_USERS = "1,2,3"
+DEFAULT_TEST_NUM_USERS = "1,2,3,4,5"
+>>>>>>> 588b05913c5a26cb8ad402185084b33bb5918d6a
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -398,20 +403,52 @@ def count_scenario_rules(authority_setting: list[dict[str, Any]]) -> int:
 
 def resolve_split_user_counts(
     *,
-    num_users: int | str | Iterable[int],
+    num_users: int | str | Iterable[int] | None = None,
     train_num_users: int | str | Iterable[int] | None = None,
     test_num_users: int | str | Iterable[int] | None = None,
 ) -> tuple[list[int], list[int], list[int]]:
     """Resolve split-specific user counts and their generation union."""
 
     train_counts = parse_user_counts(
-        num_users if train_num_users is None else train_num_users
+        train_num_users
+        if train_num_users is not None
+        else (num_users if num_users is not None else DEFAULT_TRAIN_NUM_USERS)
     )
     test_counts = parse_user_counts(
-        num_users if test_num_users is None else test_num_users
+        test_num_users
+        if test_num_users is not None
+        else (num_users if num_users is not None else DEFAULT_TEST_NUM_USERS)
     )
     generation_counts = list(dict.fromkeys(train_counts + test_counts))
     return train_counts, test_counts, generation_counts
+
+
+def max_rules_per_user() -> int:
+    """Return the largest number of attribute rules one user can receive."""
+
+    return max(
+        len(category_pair["front_candidates"])
+        + len(category_pair["back_candidates"])
+        for category_pair in make_category_combinations(DEFAULT_CATEGORIES)
+    )
+
+
+def resolve_max_rules_per_scenario(
+    max_rules_per_scenario: int | None,
+    *,
+    test_user_counts: Iterable[int],
+) -> int:
+    """Use the requested limit or the maximum supported by the test schema."""
+
+    if max_rules_per_scenario is not None:
+        if max_rules_per_scenario < 1:
+            raise ValueError("max_rules_per_scenario must be at least 1")
+        return max_rules_per_scenario
+
+    user_counts = list(test_user_counts)
+    if not user_counts:
+        raise ValueError("At least one test user count is required.")
+    return max_rules_per_user() * max(user_counts)
 
 
 def generate_authority_data(
@@ -910,25 +947,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
     parser.add_argument(
         "--num-users",
-        default="1,2,3,4",
-        help="Comma-separated user counts to generate. Default: 1,2,3,4.",
+        default=None,
+        help="Comma-separated user counts for both splits unless overridden.",
     )
     parser.add_argument(
         "--train-num-users",
         default=None,
-        help="Comma-separated user counts allowed in train. Defaults to --num-users.",
+        help="Comma-separated user counts allowed in train. Default: 1,2,3.",
     )
     parser.add_argument(
         "--test-num-users",
         default=None,
-        help="Comma-separated user counts allowed in test. Defaults to --num-users.",
+        help="Comma-separated user counts allowed in test. Default: 1,2,3,4,5.",
     )
     parser.add_argument("--num-random-fills", type=int, default=2)
     parser.add_argument(
         "--max-rules-per-scenario",
         type=int,
         default=None,
-        help="Maximum total rules across all users in one scenario.",
+        help="Maximum total rules; defaults to the maximum supported by test users.",
     )
     parser.add_argument(
         "--train-rows-per-dataset",
@@ -1093,6 +1130,10 @@ def main() -> None:
             test_num_users=args.test_num_users,
         )
     )
+    max_rules_per_scenario = resolve_max_rules_per_scenario(
+        args.max_rules_per_scenario,
+        test_user_counts=test_user_counts,
+    )
     datasets, counts = generate_base_authority_datasets(
         seed=args.seed,
         num_categories=args.num_categories,
@@ -1100,7 +1141,7 @@ def main() -> None:
         num_samples_per_k_pair=args.num_samples_per_k_pair,
         num_users=generation_user_counts,
         num_random_fills=args.num_random_fills,
-        max_rules_per_scenario=args.max_rules_per_scenario,
+        max_rules_per_scenario=max_rules_per_scenario,
     )
 
     if not args.dry_run:
@@ -1108,7 +1149,7 @@ def main() -> None:
             datasets,
             output_dir=args.output_dir,
             test_ratio=args.test_ratio,
-            max_rules_per_scenario=args.max_rules_per_scenario,
+            max_rules_per_scenario=max_rules_per_scenario,
             train_user_counts=train_user_counts,
             test_user_counts=test_user_counts,
             train_rows_per_dataset=args.train_rows_per_dataset,
