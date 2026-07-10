@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.make_base_authority_data import (
     DEFAULT_OUTPUT_DIR as DEFAULT_BASE_OUTPUT_DIR,
     generate_base_authority_datasets,
+    resolve_max_rules_per_scenario,
     resolve_split_user_counts,
     write_dataset_splits,
 )
@@ -43,25 +44,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
     parser.add_argument(
         "--num-users",
-        default="1,2,3,4",
-        help="Comma-separated user counts to generate. Default: 1,2,3,4.",
+        default=None,
+        help="Comma-separated user counts for both splits unless overridden.",
     )
     parser.add_argument(
         "--train-num-users",
         default=None,
-        help="Comma-separated user counts allowed in train. Defaults to --num-users.",
+        help="Comma-separated user counts allowed in train. Default: 1,2,3.",
     )
     parser.add_argument(
         "--test-num-users",
         default=None,
-        help="Comma-separated user counts allowed in test. Defaults to --num-users.",
+        help="Comma-separated user counts allowed in test. Default: 1,2,3,4,5.",
     )
     parser.add_argument("--num-random-fills", type=int, default=2)
     parser.add_argument(
         "--max-rules-per-scenario",
         type=int,
         default=None,
-        help="Maximum total rules across all users in one scenario.",
+        help="Maximum total rules; defaults to the maximum supported by test users.",
     )
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--base-output-dir", type=Path, default=DEFAULT_BASE_OUTPUT_DIR)
@@ -86,6 +87,10 @@ def main() -> None:
             test_num_users=args.test_num_users,
         )
     )
+    max_rules_per_scenario = resolve_max_rules_per_scenario(
+        args.max_rules_per_scenario,
+        test_user_counts=test_user_counts,
+    )
 
     print("[1] Build base authority data")
     datasets, base_counts = generate_base_authority_datasets(
@@ -95,13 +100,13 @@ def main() -> None:
         num_samples_per_k_pair=args.num_samples_per_k_pair,
         num_users=generation_user_counts,
         num_random_fills=args.num_random_fills,
-        max_rules_per_scenario=args.max_rules_per_scenario,
+        max_rules_per_scenario=max_rules_per_scenario,
     )
     base_counts["written"] = write_dataset_splits(
         datasets,
         output_dir=args.base_output_dir,
         test_ratio=args.test_ratio,
-        max_rules_per_scenario=args.max_rules_per_scenario,
+        max_rules_per_scenario=max_rules_per_scenario,
         train_user_counts=train_user_counts,
         test_user_counts=test_user_counts,
         seed=args.seed,
