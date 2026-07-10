@@ -28,6 +28,7 @@ from src.domains import DEFAULT_CATEGORIES
 from src.label_based_polarity_sampling import (
     deduplicate_rows,
     make_rows,
+    parse_user_counts,
     polarity_sampling,
 )
 
@@ -40,7 +41,11 @@ def _sample_expanded_authority_data(
     num_samples_per_k_pair: int = 10,
     num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
+    max_rules_per_scenario: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if max_rules_per_scenario is not None and max_rules_per_scenario < 1:
+        raise ValueError("max_rules_per_scenario must be at least 1")
+
     rng = random.Random(seed)
 
     category_combinations = make_category_combinations(DEFAULT_CATEGORIES)
@@ -61,14 +66,47 @@ def _sample_expanded_authority_data(
         num_random_fills=num_random_fills,
         rng=rng,
     )
+    rule_limited_samples = [
+        sample
+        for sample in expanded_samples
+        if max_rules_per_scenario is None
+        or count_scenario_rules(sample["authority_setting"])
+        <= max_rules_per_scenario
+    ]
 
     counts = {
         "category_candidates": len(category_combinations),
         "sampled_categories": len(sampled_categories),
         "attribute_samples": len(attribute_samples),
         "polarity_expanded_samples": len(expanded_samples),
+        "rule_limited_samples": len(rule_limited_samples),
+        "dropped_by_rule_limit": len(expanded_samples) - len(rule_limited_samples),
     }
-    return expanded_samples, counts
+    return rule_limited_samples, counts
+
+
+def count_scenario_rules(authority_setting: list[dict[str, Any]]) -> int:
+    """Return the total number of rules across every user in a scenario."""
+
+    return sum(len(setting["rules"]) for setting in authority_setting)
+
+
+def resolve_split_user_counts(
+    *,
+    num_users: int | str | Iterable[int],
+    train_num_users: int | str | Iterable[int] | None = None,
+    test_num_users: int | str | Iterable[int] | None = None,
+) -> tuple[list[int], list[int], list[int]]:
+    """Resolve split-specific user counts and their generation union."""
+
+    train_counts = parse_user_counts(
+        num_users if train_num_users is None else train_num_users
+    )
+    test_counts = parse_user_counts(
+        num_users if test_num_users is None else test_num_users
+    )
+    generation_counts = list(dict.fromkeys(train_counts + test_counts))
+    return train_counts, test_counts, generation_counts
 
 
 def generate_authority_data(
@@ -78,6 +116,7 @@ def generate_authority_data(
     num_samples_per_k_pair: int = 10,
     num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
+    max_rules_per_scenario: int | None = None,
 ) -> tuple[list[dict], dict[str, int]]:
     """Return the legacy row shape used for quick previews."""
 
@@ -88,6 +127,7 @@ def generate_authority_data(
         num_samples_per_k_pair=num_samples_per_k_pair,
         num_users=num_users,
         num_random_fills=num_random_fills,
+        max_rules_per_scenario=max_rules_per_scenario,
     )
     rows = make_rows(expanded_samples)
     deduplicated_rows = deduplicate_rows(rows)
@@ -188,6 +228,7 @@ def make_base_row(
         "is_conflict": sample["user_conflict"] == "yes",
         "BaseAuthoritySetting": authority_setting,
         "ParaphraseVersion": None,
+        "RuleCount": count_scenario_rules(sample["authority_setting"]),
         "source": {
             "category_idx": sample["category_idx"],
             "k_pair_idx": sample["k_pair_idx"],
@@ -268,6 +309,7 @@ def generate_base_authority_datasets(
     num_samples_per_k_pair: int = 10,
     num_users: int | str | Iterable[int] = (1, 2, 3, 4),
     num_random_fills: int = 2,
+    max_rules_per_scenario: int | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     expanded_samples, sampling_counts = _sample_expanded_authority_data(
         seed=seed,
@@ -276,6 +318,7 @@ def generate_base_authority_datasets(
         num_samples_per_k_pair=num_samples_per_k_pair,
         num_users=num_users,
         num_random_fills=num_random_fills,
+        max_rules_per_scenario=max_rules_per_scenario,
     )
 
     datasets: dict[str, list[dict[str, Any]]] = {}
@@ -301,27 +344,64 @@ def split_rows(
     rows: list[dict[str, Any]],
     *,
     test_ratio: float = 0.2,
+    max_rules_per_scenario: int | None = None,
+    train_user_counts: Iterable[int] | None = None,
+    test_user_counts: Iterable[int] | None = None,
     rng: random.Random | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     if not 0 <= test_ratio <= 1:
         raise ValueError("test_ratio must be between 0 and 1")
+    if max_rules_per_scenario is not None and max_rules_per_scenario < 1:
+        raise ValueError("max_rules_per_scenario must be at least 1")
 
     rng = rng or random
-    shuffled = list(rows)
-    rng.shuffle(shuffled)
 
-    if not shuffled:
-        return {"train": [], "test": []}
-    if test_ratio == 0:
-        return {"train": shuffled, "test": []}
-    if test_ratio == 1:
-        return {"train": [], "test": shuffled}
+    train_user_counts_set = (
+        set(train_user_counts) if train_user_counts is not None else None
+    )
+    test_user_counts_set = (
+        set(test_user_counts) if test_user_counts is not None else None
+    )
 
-    test_count = round(len(shuffled) * test_ratio)
-    test_count = max(1, min(test_count, len(shuffled) - 1))
+    train_only_rows = []
+    test_only_rows = []
+    shared_rows = []
+    train_rule_limit = (
+        max_rules_per_scenario // 2
+        if max_rules_per_scenario is not None
+        else None
+    )
+
+    for row in rows:
+        rule_count = row["metadata"]["RuleCount"]
+        user_count = len(row["AuthoritySetting"]["users"])
+        train_eligible = (
+            (train_rule_limit is None or rule_count <= train_rule_limit)
+            and (train_user_counts_set is None or user_count in train_user_counts_set)
+        )
+        test_eligible = (
+            (max_rules_per_scenario is None or rule_count <= max_rules_per_scenario)
+            and (test_user_counts_set is None or user_count in test_user_counts_set)
+        )
+
+        if train_eligible and test_eligible:
+            shared_rows.append(row)
+        elif train_eligible:
+            train_only_rows.append(row)
+        elif test_eligible:
+            test_only_rows.append(row)
+
+    rng.shuffle(shared_rows)
+    rng.shuffle(train_only_rows)
+    rng.shuffle(test_only_rows)
+
+    shared_test_count = round(len(shared_rows) * test_ratio)
+    if shared_rows and 0 < test_ratio < 1:
+        shared_test_count = max(1, min(shared_test_count, len(shared_rows) - 1))
+
     return {
-        "train": shuffled[test_count:],
-        "test": shuffled[:test_count],
+        "train": train_only_rows + shared_rows[shared_test_count:],
+        "test": test_only_rows + shared_rows[:shared_test_count],
     }
 
 
@@ -337,6 +417,9 @@ def write_dataset_splits(
     *,
     output_dir: Path = DEFAULT_OUTPUT_DIR,
     test_ratio: float = 0.2,
+    max_rules_per_scenario: int | None = None,
+    train_user_counts: Iterable[int] | None = None,
+    test_user_counts: Iterable[int] | None = None,
     seed: int = 42,
 ) -> dict[str, dict[str, int]]:
     written_counts = {}
@@ -345,6 +428,9 @@ def write_dataset_splits(
         splits = split_rows(
             rows,
             test_ratio=test_ratio,
+            max_rules_per_scenario=max_rules_per_scenario,
+            train_user_counts=train_user_counts,
+            test_user_counts=test_user_counts,
             rng=random.Random(seed + dataset_idx),
         )
         dataset_counts = {}
@@ -376,7 +462,23 @@ def parse_args() -> argparse.Namespace:
         default="1,2,3,4",
         help="Comma-separated user counts to generate. Default: 1,2,3,4.",
     )
+    parser.add_argument(
+        "--train-num-users",
+        default=None,
+        help="Comma-separated user counts allowed in train. Defaults to --num-users.",
+    )
+    parser.add_argument(
+        "--test-num-users",
+        default=None,
+        help="Comma-separated user counts allowed in test. Defaults to --num-users.",
+    )
     parser.add_argument("--num-random-fills", type=int, default=2)
+    parser.add_argument(
+        "--max-rules-per-scenario",
+        type=int,
+        default=None,
+        help="Maximum total rules across all users in one scenario.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument(
@@ -497,13 +599,21 @@ def print_base_examples_table(
 
 def main() -> None:
     args = parse_args()
+    train_user_counts, test_user_counts, generation_user_counts = (
+        resolve_split_user_counts(
+            num_users=args.num_users,
+            train_num_users=args.train_num_users,
+            test_num_users=args.test_num_users,
+        )
+    )
     datasets, counts = generate_base_authority_datasets(
         seed=args.seed,
         num_categories=args.num_categories,
         max_k_pairs_per_category=args.max_k_pairs_per_category,
         num_samples_per_k_pair=args.num_samples_per_k_pair,
-        num_users=args.num_users,
+        num_users=generation_user_counts,
         num_random_fills=args.num_random_fills,
+        max_rules_per_scenario=args.max_rules_per_scenario,
     )
 
     if not args.dry_run:
@@ -511,6 +621,9 @@ def main() -> None:
             datasets,
             output_dir=args.output_dir,
             test_ratio=args.test_ratio,
+            max_rules_per_scenario=args.max_rules_per_scenario,
+            train_user_counts=train_user_counts,
+            test_user_counts=test_user_counts,
             seed=args.seed,
         )
 

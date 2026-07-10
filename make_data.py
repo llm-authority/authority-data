@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 from src.make_base_authority_data import (
     DEFAULT_OUTPUT_DIR as DEFAULT_BASE_OUTPUT_DIR,
     generate_base_authority_datasets,
+    resolve_split_user_counts,
     write_dataset_splits,
 )
 from src.make_paraphrase_data import (
@@ -45,7 +46,23 @@ def parse_args() -> argparse.Namespace:
         default="1,2,3,4",
         help="Comma-separated user counts to generate. Default: 1,2,3,4.",
     )
+    parser.add_argument(
+        "--train-num-users",
+        default=None,
+        help="Comma-separated user counts allowed in train. Defaults to --num-users.",
+    )
+    parser.add_argument(
+        "--test-num-users",
+        default=None,
+        help="Comma-separated user counts allowed in test. Defaults to --num-users.",
+    )
     parser.add_argument("--num-random-fills", type=int, default=2)
+    parser.add_argument(
+        "--max-rules-per-scenario",
+        type=int,
+        default=None,
+        help="Maximum total rules across all users in one scenario.",
+    )
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--base-output-dir", type=Path, default=DEFAULT_BASE_OUTPUT_DIR)
     parser.add_argument(
@@ -62,6 +79,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    train_user_counts, test_user_counts, generation_user_counts = (
+        resolve_split_user_counts(
+            num_users=args.num_users,
+            train_num_users=args.train_num_users,
+            test_num_users=args.test_num_users,
+        )
+    )
 
     print("[1] Build base authority data")
     datasets, base_counts = generate_base_authority_datasets(
@@ -69,13 +93,17 @@ def main() -> None:
         num_categories=args.num_categories,
         max_k_pairs_per_category=args.max_k_pairs_per_category,
         num_samples_per_k_pair=args.num_samples_per_k_pair,
-        num_users=args.num_users,
+        num_users=generation_user_counts,
         num_random_fills=args.num_random_fills,
+        max_rules_per_scenario=args.max_rules_per_scenario,
     )
     base_counts["written"] = write_dataset_splits(
         datasets,
         output_dir=args.base_output_dir,
         test_ratio=args.test_ratio,
+        max_rules_per_scenario=args.max_rules_per_scenario,
+        train_user_counts=train_user_counts,
+        test_user_counts=test_user_counts,
         seed=args.seed,
     )
     print(json.dumps(base_counts, indent=2, ensure_ascii=False))

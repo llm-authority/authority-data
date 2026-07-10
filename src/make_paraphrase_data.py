@@ -73,13 +73,8 @@ def _format_rule_items(
 def render_user_policy(user_setting: dict[str, Any]) -> str:
     grouped = _group_rules_by_category(user_setting["rules"])
     user = user_setting["user"]
-    default_policy = (
-        "allow"
-        if user_setting["authority"] == "yes"
-        else "disallow"
-    )
     lines = [
-        f"{user} default: {default_policy}",
+        user,
         "Allowed:",
         *_format_rule_items(user, grouped, "yes"),
         "Disallowed:",
