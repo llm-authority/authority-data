@@ -8,7 +8,7 @@ The Hugging Face dataset is organized as one repo with multiple configs:
 | Config | Splits | Description |
 | --- | --- | --- |
 | `GeneralAuthority` | `train`, `test` | Authority rules over request attributes. |
-| `ToolAuthority` | `train`, `test` | Tool-dependent authority rules over `tool`, `information_action`, and `information_type`. |
+| `ToolAuthority` | `train`, `test` | Authority rules for whether a requested tool use is allowed under recipient, information, and purpose conditions. |
 
 
 Each final row has this shape:
@@ -85,7 +85,7 @@ print(general["train"][0])
 
 ## Generation Flow
 
-1. Sample category pairs or tool/action/information-type combinations.
+1. Sample category combinations, or tool-specific recipient/information-type combinations.
 2. Expand them into priority-ordered user authority rules.
 3. Split each dataset config into `train` and `test`.
 4. Render each structured authority setting into `text`.

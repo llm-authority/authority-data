@@ -24,19 +24,25 @@ TOOL_AUTHORITY = "ToolAuthority"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.attribute_sampling import attribute_sampling
-from src.category_sampling import category_sampling, make_category_combinations
-from src.domains import DEFAULT_CATEGORIES, TOOL_AUTHORITY_CATEGORIES, CategoryValues
+from src.category_sampling import category_sampling
+from src.domains import (
+    ALL_TOOL_NAMES,
+    DEFAULT_CATEGORIES,
+    GENERAL_AUTHORITY_TEST_CATEGORIES,
+    GENERAL_AUTHORITY_TRAIN_CATEGORIES,
+    TEST_TOOL_NAMES,
+    TOOL_AUTHORITY_CATEGORIES,
+    TOOL_AUTHORITY_TEST_CATEGORIES,
+    TOOL_AUTHORITY_TRAIN_CATEGORIES,
+    TRAIN_TOOL_NAMES,
+    CategoryValues,
+)
 from src.label_based_polarity_sampling import (
-    POLARITIES,
     USER_IDS,
-    deduplicate_rows,
     label_items,
-    make_rows,
     make_case_specs,
     make_selected_labels,
     parse_user_counts,
-    polarity_sampling,
 )
 
 
@@ -55,19 +61,22 @@ def _sample_expanded_authority_data(
 
     rng = random.Random(seed)
 
-    category_combinations = make_category_combinations(DEFAULT_CATEGORIES)
+    category_combinations = make_multi_category_combinations(
+        DEFAULT_CATEGORIES,
+        category_counts=range(2, len(DEFAULT_CATEGORIES) + 1),
+    )
     sampled_categories = category_sampling(
         category_combinations,
         n=num_categories,
         rng=rng,
     )
-    attribute_samples = attribute_sampling(
+    attribute_samples = multi_attribute_sampling(
         sampled_categories,
         max_k_pairs_per_category=max_k_pairs_per_category,
         num_samples_per_k_pair=num_samples_per_k_pair,
         rng=rng,
     )
-    expanded_samples = polarity_sampling(
+    expanded_samples = polarity_sampling_multi(
         attribute_samples,
         num_users=num_users,
         num_random_fills=num_random_fills,
@@ -94,25 +103,36 @@ def _sample_expanded_authority_data(
 
 def make_multi_category_combinations(
     categories: CategoryValues,
+    category_counts: Iterable[int] | None = None,
 ) -> list[dict[str, Any]]:
-    """Build one-category-per-axis combinations for multi-attribute authority."""
+    """Build category combinations across non-empty categories."""
 
-    category_combinations: list[dict[str, Any]] = []
-    axes = list(categories.items())
+    non_empty_categories = [
+        (category, values)
+        for category, values in categories.items()
+        if values
+    ]
+    if not non_empty_categories:
+        return []
 
-    for axis_options in product(*(axis_options.items() for _, axis_options in axes)):
-        category_names = [category_name for category_name, _ in axis_options]
-        candidates_by_category = {
-            category_name: list(values)
-            for category_name, values in axis_options
-        }
-        category_combinations.append(
-            {
-                "category_axes": [axis for axis, _ in axes],
-                "categories": category_names,
-                "candidates_by_category": candidates_by_category,
-            }
-        )
+    if category_counts is None:
+        category_counts = (len(non_empty_categories),)
+
+    category_combinations = []
+    for category_count in category_counts:
+        if category_count < 1:
+            continue
+        for category_group in combinations(non_empty_categories, category_count):
+            category_combinations.append(
+                {
+                    "category_axes": [category for category, _ in category_group],
+                    "categories": [category for category, _ in category_group],
+                    "candidates_by_category": {
+                        category: list(values)
+                        for category, values in category_group
+                    },
+                }
+            )
 
     return category_combinations
 
@@ -152,10 +172,10 @@ def multi_attribute_sampling(
                 list(combinations(candidates_by_category[name], k))
                 for name, k in zip(category_names, k_tuple)
             ]
-            possible_attribute_samples = list(product(*possible_samples_by_category))
-            sampled_attributes = rng.sample(
-                possible_attribute_samples,
-                k=min(num_samples_per_k_pair, len(possible_attribute_samples)),
+            sampled_attributes = sample_attribute_products(
+                possible_samples_by_category,
+                sample_size=num_samples_per_k_pair,
+                rng=rng,
             )
 
             for sample_idx, sampled_values in enumerate(sampled_attributes):
@@ -177,6 +197,51 @@ def multi_attribute_sampling(
                 )
 
     return results
+
+
+def sample_attribute_products(
+    possible_samples_by_category: list[list[tuple[str, ...]]],
+    *,
+    sample_size: int,
+    rng: random.Random,
+) -> list[tuple[tuple[str, ...], ...]]:
+    """Sample from a product of per-category combinations without materializing it."""
+
+    if sample_size < 1 or not possible_samples_by_category:
+        return []
+
+    total_size = 1
+    for samples in possible_samples_by_category:
+        total_size *= len(samples)
+    target_size = min(sample_size, total_size)
+
+    sampled = []
+    seen = set()
+    max_attempts = max(100, target_size * 20)
+    attempts = 0
+
+    while len(sampled) < target_size and attempts < max_attempts:
+        attempts += 1
+        candidate = tuple(
+            rng.choice(samples)
+            for samples in possible_samples_by_category
+        )
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        sampled.append(candidate)
+
+    if len(sampled) == target_size:
+        return sampled
+
+    for candidate in product(*possible_samples_by_category):
+        if candidate in seen:
+            continue
+        sampled.append(candidate)
+        if len(sampled) == target_size:
+            break
+
+    return sampled
 
 
 def polarity_sampling_multi(
@@ -282,7 +347,10 @@ def _sample_expanded_tool_authority_data(
         raise ValueError("max_rules_per_scenario must be at least 1")
 
     rng = random.Random(seed)
-    category_combinations = make_multi_category_combinations(TOOL_AUTHORITY_CATEGORIES)
+    category_combinations = make_multi_category_combinations(
+        TOOL_AUTHORITY_CATEGORIES,
+        category_counts=range(2, len(TOOL_AUTHORITY_CATEGORIES) + 1),
+    )
     sampled_categories = category_sampling(
         category_combinations,
         n=num_categories,
@@ -300,6 +368,9 @@ def _sample_expanded_tool_authority_data(
         num_random_fills=num_random_fills,
         rng=rng,
     )
+    for sample in expanded_samples:
+        sample["tool_name"] = rng.choice(ALL_TOOL_NAMES)
+
     rule_limited_samples = [
         sample
         for sample in expanded_samples
@@ -363,8 +434,21 @@ def generate_authority_data(
         num_random_fills=num_random_fills,
         max_rules_per_scenario=max_rules_per_scenario,
     )
-    rows = make_rows(expanded_samples)
-    deduplicated_rows = deduplicate_rows(rows)
+    rows = [
+        {
+            "categories": sample["categories"],
+            "authority_setting": sample["authority_setting"],
+            "query": ", ".join(
+                str(value)
+                for value in sample["user1_selected"]["attributes"].values()
+            ),
+            "priority": sample["priority"],
+            "label": sample["label"],
+            "is_conflict": sample["user_conflict"],
+        }
+        for sample in expanded_samples
+    ]
+    deduplicated_rows = deduplicate_legacy_rows(rows)
 
     counts = counts | {
         "deduplicated_rows": len(deduplicated_rows),
@@ -372,6 +456,20 @@ def generate_authority_data(
     }
 
     return deduplicated_rows, counts
+
+
+def deduplicate_legacy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduplicated = []
+    seen = set()
+
+    for row in rows:
+        key = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(row)
+
+    return deduplicated
 
 
 def label_to_text(label: str) -> str:
@@ -596,7 +694,11 @@ def generate_base_authority_datasets(
     }
 
     tool_rows = [
-        make_base_row(sample, dataset_name=TOOL_AUTHORITY)
+        make_base_row(
+            sample,
+            dataset_name=TOOL_AUTHORITY,
+            tool_name=sample["tool_name"],
+        )
         for sample in expanded_tool_samples
     ]
     tool_deduplicated = deduplicate_base_rows(tool_rows)
@@ -618,6 +720,10 @@ def split_rows(
     max_rules_per_scenario: int | None = None,
     train_user_counts: Iterable[int] | None = None,
     test_user_counts: Iterable[int] | None = None,
+    train_categories: Iterable[str] | None = None,
+    test_categories: Iterable[str] | None = None,
+    train_tools: Iterable[str] | None = None,
+    test_tools: Iterable[str] | None = None,
     rng: random.Random | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     if not 0 <= test_ratio <= 1:
@@ -633,6 +739,10 @@ def split_rows(
     test_user_counts_set = (
         set(test_user_counts) if test_user_counts is not None else None
     )
+    train_categories_set = set(train_categories) if train_categories is not None else None
+    test_categories_set = set(test_categories) if test_categories is not None else None
+    train_tools_set = set(train_tools) if train_tools is not None else None
+    test_tools_set = set(test_tools) if test_tools is not None else None
 
     train_only_rows = []
     test_only_rows = []
@@ -646,13 +756,25 @@ def split_rows(
     for row in rows:
         rule_count = row["metadata"]["RuleCount"]
         user_count = len(row["AuthoritySetting"]["users"])
+        row_categories = set(row["metadata"]["categories"])
+        row_tool = row["metadata"].get("tool")
         train_eligible = (
             (train_rule_limit is None or rule_count <= train_rule_limit)
             and (train_user_counts_set is None or user_count in train_user_counts_set)
+            and (
+                train_categories_set is None
+                or row_categories.issubset(train_categories_set)
+            )
+            and (train_tools_set is None or row_tool in train_tools_set)
         )
         test_eligible = (
             (max_rules_per_scenario is None or rule_count <= max_rules_per_scenario)
             and (test_user_counts_set is None or user_count in test_user_counts_set)
+            and (
+                test_categories_set is None
+                or row_categories.issubset(test_categories_set)
+            )
+            and (test_tools_set is None or row_tool in test_tools_set)
         )
 
         if train_eligible and test_eligible:
@@ -683,6 +805,26 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def sample_split_rows(
+    rows: list[dict[str, Any]],
+    *,
+    target_count: int | None = None,
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    if target_count is None:
+        return list(rows)
+    if target_count < 0:
+        raise ValueError("target split row counts must be non-negative")
+    if target_count > len(rows):
+        raise ValueError(
+            f"Requested {target_count} rows, but only {len(rows)} rows are available."
+        )
+
+    sampled_rows = list(rows)
+    rng.shuffle(sampled_rows)
+    return sampled_rows[:target_count]
+
+
 def write_dataset_splits(
     datasets: dict[str, list[dict[str, Any]]],
     *,
@@ -691,23 +833,61 @@ def write_dataset_splits(
     max_rules_per_scenario: int | None = None,
     train_user_counts: Iterable[int] | None = None,
     test_user_counts: Iterable[int] | None = None,
+    train_rows_per_dataset: int | None = None,
+    test_rows_per_dataset: int | None = None,
+    train_rows_by_dataset: dict[str, int | None] | None = None,
+    test_rows_by_dataset: dict[str, int | None] | None = None,
     seed: int = 42,
 ) -> dict[str, dict[str, int]]:
     written_counts = {}
 
     for dataset_idx, (dataset_name, rows) in enumerate(datasets.items()):
+        train_categories = None
+        test_categories = None
+        train_tools = None
+        test_tools = None
+        if dataset_name == GENERAL_AUTHORITY:
+            train_categories = GENERAL_AUTHORITY_TRAIN_CATEGORIES
+            test_categories = GENERAL_AUTHORITY_TEST_CATEGORIES
+        elif dataset_name == TOOL_AUTHORITY:
+            train_categories = TOOL_AUTHORITY_TRAIN_CATEGORIES
+            test_categories = TOOL_AUTHORITY_TEST_CATEGORIES
+            train_tools = TRAIN_TOOL_NAMES
+            test_tools = TEST_TOOL_NAMES
+
         splits = split_rows(
             rows,
             test_ratio=test_ratio,
             max_rules_per_scenario=max_rules_per_scenario,
             train_user_counts=train_user_counts,
             test_user_counts=test_user_counts,
+            train_categories=train_categories,
+            test_categories=test_categories,
+            train_tools=train_tools,
+            test_tools=test_tools,
             rng=random.Random(seed + dataset_idx),
         )
         dataset_counts = {}
         for split_name, split_rows_ in splits.items():
             path = output_dir / dataset_name / f"{split_name}.jsonl"
-            reindexed_rows = add_row_ids(split_rows_)
+            if split_name == "train":
+                target_count = (
+                    train_rows_by_dataset.get(dataset_name, train_rows_per_dataset)
+                    if train_rows_by_dataset is not None
+                    else train_rows_per_dataset
+                )
+            else:
+                target_count = (
+                    test_rows_by_dataset.get(dataset_name, test_rows_per_dataset)
+                    if test_rows_by_dataset is not None
+                    else test_rows_per_dataset
+                )
+            sampled_rows = sample_split_rows(
+                split_rows_,
+                target_count=target_count,
+                rng=random.Random(seed + dataset_idx * 1000 + len(split_name)),
+            )
+            reindexed_rows = add_row_ids(sampled_rows)
             write_jsonl(path, reindexed_rows)
             dataset_counts[split_name] = len(reindexed_rows)
         written_counts[dataset_name] = dataset_counts
@@ -723,8 +903,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-categories",
         type=int,
-        default=None,
-        help="Number of category pairs to sample. Defaults to all pairs.",
+        default=20,
+        help="Number of category combinations to sample. Defaults to 20.",
     )
     parser.add_argument("--max-k-pairs-per-category", type=int, default=10)
     parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
@@ -749,6 +929,42 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Maximum total rules across all users in one scenario.",
+    )
+    parser.add_argument(
+        "--train-rows-per-dataset",
+        type=int,
+        default=None,
+        help="Fallback train rows to sample per dataset config after splitting.",
+    )
+    parser.add_argument(
+        "--test-rows-per-dataset",
+        type=int,
+        default=None,
+        help="Fallback test rows to sample per dataset config after splitting.",
+    )
+    parser.add_argument(
+        "--general-train-rows",
+        type=int,
+        default=500,
+        help="Train rows to sample for GeneralAuthority.",
+    )
+    parser.add_argument(
+        "--general-test-rows",
+        type=int,
+        default=1500,
+        help="Test rows to sample for GeneralAuthority.",
+    )
+    parser.add_argument(
+        "--tool-train-rows",
+        type=int,
+        default=1000,
+        help="Train rows to sample for ToolAuthority.",
+    )
+    parser.add_argument(
+        "--tool-test-rows",
+        type=int,
+        default=3000,
+        help="Test rows to sample for ToolAuthority.",
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--test-ratio", type=float, default=0.2)
@@ -895,6 +1111,16 @@ def main() -> None:
             max_rules_per_scenario=args.max_rules_per_scenario,
             train_user_counts=train_user_counts,
             test_user_counts=test_user_counts,
+            train_rows_per_dataset=args.train_rows_per_dataset,
+            test_rows_per_dataset=args.test_rows_per_dataset,
+            train_rows_by_dataset={
+                GENERAL_AUTHORITY: args.general_train_rows,
+                TOOL_AUTHORITY: args.tool_train_rows,
+            },
+            test_rows_by_dataset={
+                GENERAL_AUTHORITY: args.general_test_rows,
+                TOOL_AUTHORITY: args.tool_test_rows,
+            },
             seed=args.seed,
         )
 

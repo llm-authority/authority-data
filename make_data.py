@@ -36,8 +36,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-categories",
         type=int,
-        default=None,
-        help="Number of category pairs to sample. Defaults to all pairs.",
+        default=20,
+        help="Number of category combinations to sample. Defaults to 20.",
     )
     parser.add_argument("--max-k-pairs-per-category", type=int, default=10)
     parser.add_argument("--num-samples-per-k-pair", type=int, default=10)
@@ -62,6 +62,42 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Maximum total rules across all users in one scenario.",
+    )
+    parser.add_argument(
+        "--train-rows-per-dataset",
+        type=int,
+        default=None,
+        help="Fallback train rows to sample per dataset config after splitting.",
+    )
+    parser.add_argument(
+        "--test-rows-per-dataset",
+        type=int,
+        default=None,
+        help="Fallback test rows to sample per dataset config after splitting.",
+    )
+    parser.add_argument(
+        "--general-train-rows",
+        type=int,
+        default=500,
+        help="Train rows to sample for GeneralAuthority.",
+    )
+    parser.add_argument(
+        "--general-test-rows",
+        type=int,
+        default=1500,
+        help="Test rows to sample for GeneralAuthority.",
+    )
+    parser.add_argument(
+        "--tool-train-rows",
+        type=int,
+        default=1000,
+        help="Train rows to sample for ToolAuthority.",
+    )
+    parser.add_argument(
+        "--tool-test-rows",
+        type=int,
+        default=3000,
+        help="Test rows to sample for ToolAuthority.",
     )
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--base-output-dir", type=Path, default=DEFAULT_BASE_OUTPUT_DIR)
@@ -104,6 +140,16 @@ def main() -> None:
         max_rules_per_scenario=args.max_rules_per_scenario,
         train_user_counts=train_user_counts,
         test_user_counts=test_user_counts,
+        train_rows_per_dataset=args.train_rows_per_dataset,
+        test_rows_per_dataset=args.test_rows_per_dataset,
+        train_rows_by_dataset={
+            "GeneralAuthority": args.general_train_rows,
+            "ToolAuthority": args.tool_train_rows,
+        },
+        test_rows_by_dataset={
+            "GeneralAuthority": args.general_test_rows,
+            "ToolAuthority": args.tool_test_rows,
+        },
         seed=args.seed,
     )
     print(json.dumps(base_counts, indent=2, ensure_ascii=False))

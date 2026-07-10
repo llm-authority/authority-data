@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import random
-from itertools import combinations, product
+from itertools import combinations
 from typing import Any
 
 from src.domains import DEFAULT_CATEGORIES, CategoryValues
@@ -12,28 +12,29 @@ from src.domains import DEFAULT_CATEGORIES, CategoryValues
 def make_category_combinations(
     categories: CategoryValues = DEFAULT_CATEGORIES,
 ) -> list[dict[str, Any]]:
-    """Build category pairs across different mutually exclusive axes."""
+    """Build category pairs across non-empty categories."""
 
     category_pairs: list[dict[str, Any]] = []
+    non_empty_categories = [
+        (category, values)
+        for category, values in categories.items()
+        if values
+    ]
 
-    for (front_axis, front_options), (back_axis, back_options) in combinations(
-        categories.items(),
+    for (front_category, front_values), (back_category, back_values) in combinations(
+        non_empty_categories,
         2,
     ):
-        for front_category, back_category in product(
-            front_options.keys(),
-            back_options.keys(),
-        ):
-            category_pairs.append(
-                {
-                    "category_axes": [front_axis, back_axis],
-                    "categories": [front_category, back_category],
-                    "front_category": front_category,
-                    "back_category": back_category,
-                    "front_candidates": list(front_options[front_category]),
-                    "back_candidates": list(back_options[back_category]),
-                }
-            )
+        category_pairs.append(
+            {
+                "category_axes": [front_category, back_category],
+                "categories": [front_category, back_category],
+                "front_category": front_category,
+                "back_category": back_category,
+                "front_candidates": list(front_values),
+                "back_candidates": list(back_values),
+            }
+        )
 
     return category_pairs
 

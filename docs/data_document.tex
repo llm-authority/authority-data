@@ -1,0 +1,229 @@
+\documentclass[letterpaper,twocolumn,10pt]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{booktabs}
+\usepackage{times}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+
+\setlist[itemize]{leftmargin=*, itemsep=1pt, topsep=2pt}
+\setlist[enumerate]{leftmargin=*, itemsep=1pt, topsep=2pt}
+\setlength{\parskip}{2pt}
+\setlength{\parindent}{10pt}
+
+\title{\vspace{-1.0em}AuthorityBench: Synthetic Data for Priority-Aware Tool Authorization}
+\author{Anonymous Authors}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Language agents increasingly act through external tools, but tool use is rarely
+authorized by a single flat rule. Realistic instructions often include multiple
+users, conflicting policies, priority ordering, and conditions over time,
+recipient, information type, or purpose. We introduce \textsc{AuthorityBench}, a
+synthetic benchmark for evaluating whether an agent can decide if a requested
+action or tool use is authorized under such structured policies. The dataset has
+two parts: \textsc{GeneralAuthority}, which tests abstract conditional authority
+over calendar-like attributes, and \textsc{ToolAuthority}, which tests
+tool-specific authorization over recipients, information types, purposes, and
+time conditions. The released split contains 6,000 examples with balanced labels
+and conflict rates.
+\end{abstract}
+
+\section{Motivation}
+Tool-using agents must often decide not only \emph{what} action is useful, but
+also whether the action is permitted. A user may allow an assistant to email
+schedule information to a coworker, but not to a family member; another user may
+override that rule because they have higher priority. These cases require
+compositional reasoning over authority, rather than a simple allowlist of tools.
+
+\textsc{AuthorityBench} targets this setting. Each example presents a policy
+written as allow/disallow rules from one or more users, a priority order among
+those users, and a query. The model must output whether the requested action is
+authorized. When rules conflict, the highest-priority applicable user determines
+the label.
+
+\section{Dataset Structure}
+The benchmark contains two datasets. \textsc{GeneralAuthority} abstracts away
+tools and asks whether an action is authorized under attributes such as day,
+date, and time. \textsc{ToolAuthority} asks whether using a named tool is
+authorized under conditions such as recipient, information type, purpose, day,
+and time.
+
+Each example contains a rendered prompt, queried attributes, a Yes/No label, and
+metadata with the structured policy, category combination, conflict flag, and
+prompt version. For \textsc{ToolAuthority}, the tool appears in the task
+statement, e.g., ``decide whether the requested use of the
+\texttt{send\_text\_message} tool is authorized.'' The query then lists only the
+conditions of that tool use.
+
+\section{Policy Generation}
+The generator first samples a category combination, then samples attribute
+values within the selected categories. For each sampled scenario, it creates
+user-specific allow/disallow rules. User priority is sampled independently, and
+the label is computed from the highest-priority user whose rule applies to the
+query. This produces both agreement cases and conflict cases.
+
+Formally, let \(C \subseteq \mathcal{C}\) be the sampled category set and
+\(q=\{(c,x_c):c\in C\}\) be the query attributes. For each user \(u\), the
+generator samples a rule set
+\[
+R_u=\{(c,x,\ell): c\in C,\; \ell\in\{\mathsf{Yes},\mathsf{No}\}\}.
+\]
+The user's query-level decision is
+\[
+d_u(q)=
+\begin{cases}
+\mathsf{Yes}, & \text{if all queried values are allowed by } R_u,\\
+\mathsf{No}, & \text{otherwise.}
+\end{cases}
+\]
+Given a sampled priority order \(\pi=(u_1,\ldots,u_m)\), the final label is
+\[
+y = d_{u_1}(q).
+\]
+An example is marked as conflicting when two users disagree:
+\[
+\exists u,v \quad d_u(q)\neq d_v(q).
+\]
+For \textsc{ToolAuthority}, the same process is conditioned on a sampled tool
+\(t\), drawn from the split-specific tool pool. The dataset is not the full
+Cartesian product of all possible policies; after candidate generation and
+deduplication, we randomly sample the requested number of train and test rows.
+
+\section{Splits}
+The split design focuses on three axes. First, category generalization:
+\textsc{GeneralAuthority} train uses day, date, and time; test additionally
+includes month and year. \textsc{ToolAuthority} train uses recipient,
+information type, and purpose; test additionally includes day and time. Second,
+rule-count generalization: test examples include more category combinations and
+larger policies. Third, user-count generalization: train examples contain one to
+three users, while test examples contain one to five users.
+
+\textsc{ToolAuthority} also separates tool names across splits. Train uses
+\texttt{send\_email}, \texttt{send\_text\_message}, and
+\texttt{submit\_online\_form}; test uses \texttt{make\_phone\_call},
+\texttt{send\_voice\_message}, and \texttt{start\_live\_chat}.
+
+\section{Statistics}
+\begin{table*}[t]
+\centering
+\scriptsize
+\begin{tabular}{llrrrrrrl}
+\toprule
+Dataset & Split & Rows & Yes & No & Conflict & Users & Rules avg. & User counts \\
+\midrule
+GeneralAuthority & Train & 500 & 251 & 249 & 222 & 1--3 & 20.73 & 1:97, 2:201, 3:202 \\
+GeneralAuthority & Test & 1,500 & 745 & 755 & 777 & 1--5 & 46.87 & 1:143, 2:313, 3:290, 4:391, 5:363 \\
+ToolAuthority & Train & 1,000 & 486 & 514 & 456 & 1--3 & 24.01 & 1:195, 2:410, 3:395 \\
+ToolAuthority & Test & 3,000 & 1,453 & 1,547 & 1,504 & 1--5 & 40.57 & 1:305, 2:692, 3:690, 4:647, 5:666 \\
+\bottomrule
+\end{tabular}
+\caption{Split-level dataset statistics. Counts are from \texttt{docs/data\_example.md}.}
+\label{tab:split-stats}
+\end{table*}
+
+The full split contains 2,935 Yes examples (48.9\%) and 3,065 No examples
+(51.1\%). Conflict cases are similarly balanced, with 2,959 conflict examples
+(49.3\%) and 3,041 non-conflict examples (50.7\%). Average rule count increases
+from 20.73 to 46.87 for \textsc{GeneralAuthority} and from 24.01 to 40.57 for
+\textsc{ToolAuthority} between train and test.
+
+\section{Evaluation}
+The main metric is Yes/No accuracy. We recommend reporting accuracy by dataset,
+conflict status, user count, category combination, and tool name. These slices
+separate simple policy parsing from the harder cases requiring priority
+resolution, unseen tools, and longer rule sets.
+
+\section{Limitations}
+\textsc{AuthorityBench} is synthetic and currently uses templated prompts. This
+gives precise control over labels and split structure, but it does not cover all
+ambiguities of natural user instructions. The benchmark should therefore be used
+as a controlled reasoning test, not as a complete substitute for human
+authorization data.
+
+\section*{Appendix: Statistics and Examples}
+The full printed statistics and representative prompts are stored in
+\texttt{docs/data\_example.md}. The appendix includes category-combination
+counts, tool split counts, and prompt examples for both \textsc{GeneralAuthority}
+and \textsc{ToolAuthority}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lp{0.58\columnwidth}}
+\toprule
+Statistic & Value \\
+\midrule
+Rows & 6,000 \\
+Labels & Yes: 2,935 (48.9\%); No: 3,065 (51.1\%) \\
+Conflict & True: 2,959 (49.3\%); False: 3,041 (50.7\%) \\
+User count & 1:740, 2:1,616, 3:1,577, 4:1,038, 5:1,029 \\
+Total rules & avg. 37.73, min 2, max 140 \\
+Query attributes & avg. 2.73, min 2, max 5 \\
+\bottomrule
+\end{tabular}
+\caption{Overall dataset statistics.}
+\label{tab:overall-stats}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lrrr}
+\toprule
+Tool & Train & Test & Total \\
+\midrule
+\texttt{send\_email} & 308 & 0 & 308 \\
+\texttt{send\_text\_message} & 344 & 0 & 344 \\
+\texttt{submit\_online\_form} & 348 & 0 & 348 \\
+\texttt{make\_phone\_call} & 0 & 1,017 & 1,017 \\
+\texttt{send\_voice\_message} & 0 & 995 & 995 \\
+\texttt{start\_live\_chat} & 0 & 988 & 988 \\
+\bottomrule
+\end{tabular}
+\caption{Tool split for \textsc{ToolAuthority}. Train and test tools are disjoint.}
+\label{tab:tool-split}
+\end{table}
+
+\begin{table*}[t]
+\centering
+\scriptsize
+\begin{tabular}{lrrr@{\hspace{1.4em}}lrrr}
+\toprule
+\multicolumn{4}{c}{\textsc{GeneralAuthority}} &
+\multicolumn{4}{c}{\textsc{ToolAuthority}} \\
+\cmidrule(r){1-4}\cmidrule(l){5-8}
+Category combo & Train & Test & Total & Category combo & Train & Test & Total \\
+\midrule
+date+month & 0 & 79 & 79 & day+time & 0 & 150 & 150 \\
+date+month+year & 0 & 67 & 67 & inf.+day & 0 & 134 & 134 \\
+date+time & 128 & 49 & 177 & inf.+purp. & 265 & 151 & 416 \\
+date+time+month+year & 0 & 96 & 96 & inf.+purp.+day & 0 & 152 & 152 \\
+date+time+year & 0 & 94 & 94 & inf.+purp.+day+time & 0 & 133 & 133 \\
+day+date & 128 & 44 & 172 & purp.+day & 0 & 163 & 163 \\
+day+date+month & 0 & 86 & 86 & purp.+day+time & 0 & 172 & 172 \\
+day+date+month+year & 0 & 83 & 83 & purp.+time & 0 & 148 & 148 \\
+day+date+time & 131 & 40 & 171 & rec.+day & 0 & 138 & 138 \\
+day+date+time+month & 0 & 91 & 91 & rec.+day+time & 0 & 153 & 153 \\
+day+date+time+year & 0 & 90 & 90 & rec.+inf. & 250 & 161 & 411 \\
+day+month & 0 & 74 & 74 & rec.+inf.+day & 0 & 137 & 137 \\
+day+month+year & 0 & 81 & 81 & rec.+inf.+purp. & 244 & 154 & 398 \\
+day+time & 113 & 41 & 154 & rec.+inf.+purp.+day & 0 & 179 & 179 \\
+day+time+month & 0 & 92 & 92 & rec.+inf.+purp.+day+time & 0 & 152 & 152 \\
+day+time+month+year & 0 & 86 & 86 & rec.+inf.+purp.+time & 0 & 154 & 154 \\
+day+time+year & 0 & 75 & 75 & rec.+inf.+time & 0 & 147 & 147 \\
+day+year & 0 & 60 & 60 & rec.+purp. & 241 & 152 & 393 \\
+time+month & 0 & 96 & 96 & rec.+purp.+day & 0 & 139 & 139 \\
+time+year & 0 & 76 & 76 & rec.+purp.+time & 0 & 131 & 131 \\
+\bottomrule
+\end{tabular}
+\caption{Category-combination counts by split. Abbreviations: rec. = recipient, inf. = information type, purp. = purpose.}
+\label{tab:category-combos}
+\end{table*}
+
+\end{document}

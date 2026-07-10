@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = REPO_ROOT / "data" / "base"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "paraphrase"
 DEFAULT_PARAPHRASE_VERSION = "synthetic_v1"
-DEFAULT_PROMPT_VERSION = "synthetic_prompt_v1"
+DEFAULT_PROMPT_VERSION = "synthetic_prompt_v6"
 DATASET_NAMES = ("GeneralAuthority", "ToolAuthority")
 SPLIT_NAMES = ("train", "test")
 
@@ -34,10 +34,37 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _title_value(value: str) -> str:
+def _text_value(value: str) -> str:
     if value.isupper():
         return value
     return value.replace("_", " ")
+
+
+CATEGORY_DISPLAY_NAMES = {
+    "day": "Day",
+    "date": "Date",
+    "time": "Time",
+    "month": "Month",
+    "year": "Year",
+    "recipient": "Recipient",
+    "information_type": "Information type",
+    "purpose": "Purpose",
+}
+
+
+def _category_display_name(category: str) -> str:
+    return CATEGORY_DISPLAY_NAMES.get(category, category.replace("_", " ").capitalize())
+
+
+def _display_value(category: str, value: str) -> str:
+    text = _text_value(value)
+    if category in {"day", "month"}:
+        return text.title()
+    return text
+
+
+def _user_display_name(user: str) -> str:
+    return f"User {user}"
 
 
 def _group_rules_by_category(rules: list[dict[str, str]]) -> dict[str, dict[str, list[str]]]:
@@ -49,12 +76,11 @@ def _group_rules_by_category(rules: list[dict[str, str]]) -> dict[str, dict[str,
     return grouped
 
 
-def _join_values(values: list[str]) -> str:
-    return ", ".join(_title_value(value) for value in values)
+def _join_values(category: str, values: list[str]) -> str:
+    return ", ".join(_display_value(category, value) for value in values)
 
 
 def _format_rule_items(
-    user: str,
     grouped_rules: dict[str, dict[str, list[str]]],
     label: str,
 ) -> list[str]:
@@ -63,10 +89,10 @@ def _format_rule_items(
         values = labels[label]
         if values:
             items.append(
-                f"- {user} {category.replace('_', ' ')}: {_join_values(values)}"
+                f"- {_category_display_name(category)}: {_join_values(category, values)}"
             )
     if not items:
-        items.append(f"- {user}: none")
+        items.append("- none")
     return items
 
 
@@ -74,23 +100,25 @@ def render_user_policy(user_setting: dict[str, Any]) -> str:
     grouped = _group_rules_by_category(user_setting["rules"])
     user = user_setting["user"]
     lines = [
-        user,
+        _user_display_name(user),
         "Allowed:",
-        *_format_rule_items(user, grouped, "yes"),
+        *_format_rule_items(grouped, "yes"),
         "Disallowed:",
-        *_format_rule_items(user, grouped, "no"),
+        *_format_rule_items(grouped, "no"),
     ]
     return "\n".join(lines)
 
 
-def render_query(query: dict[str, Any]) -> str:
+def render_query(query: dict[str, Any], *, include_tool: bool = True) -> str:
     attributes = query.get("attributes", {})
     lines = []
     tool = query.get("tool")
-    if tool:
+    if include_tool and tool:
         lines.append(f"- tool: {tool}")
     for category, value in attributes.items():
-        lines.append(f"- {category.replace('_', ' ')}: {_title_value(value)}")
+        lines.append(
+            f"- {_category_display_name(category)}: {_display_value(category, value)}"
+        )
     return "\n".join(lines)
 
 
@@ -98,21 +126,31 @@ def render_synthetic_paraphrase(base_row: dict[str, Any]) -> str:
     authority_setting = base_row["AuthoritySetting"]
     priority = base_row["metadata"]["priority"]
     tool = authority_setting.get("tool")
+    is_tool_authority = authority_setting.get("dataset") == "ToolAuthority"
 
-    scope = f"Task: decide whether {tool} is authorized." if tool else (
-        "Task: decide whether the requested action is authorized."
+    if is_tool_authority:
+        scope = f"Task: decide whether the requested use of the {tool} tool is authorized."
+    elif tool:
+        scope = f"Task: decide whether {tool} is authorized."
+    else:
+        scope = "Task: decide whether the requested action is authorized."
+    instruction = (
+        "Multiple users provide allow/disallow rules for the requested action. "
+        "If their rules disagree, follow the priority order."
     )
-    priority_text = " > ".join(priority)
+    priority_text = " > ".join(_user_display_name(user) for user in priority)
     user_text = "\n\n".join(
         render_user_policy(user_setting)
         for user_setting in authority_setting["users"]
     )
-    query_text = render_query(base_row["Query"])
+    query_text = render_query(base_row["Query"], include_tool=not is_tool_authority)
+    query_header = "Query conditions" if is_tool_authority else "Query"
     return (
         f"{scope}\n"
+        f"{instruction}\n"
         f"Priority: {priority_text}\n\n"
         f"{user_text}\n\n"
-        f"Query:\n{query_text}"
+        f"{query_header}:\n{query_text}"
     )
 
 

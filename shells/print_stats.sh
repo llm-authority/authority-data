@@ -37,6 +37,7 @@ BLUE = "34"
 MAGENTA = "35"
 CYAN = "36"
 RED = "31"
+HEADER = "1;36"
 
 if not paths:
     print(f"No JSONL files found under {data_dir}")
@@ -80,6 +81,22 @@ def format_counter_compact(
     return " | ".join(items)
 
 
+CATEGORY_ABBREVIATIONS = {
+    "recipient": "rec.",
+    "information_type": "inf.",
+    "purpose": "purp.",
+    "urgency": "urg.",
+}
+
+
+def abbreviate_category(category: str) -> str:
+    return CATEGORY_ABBREVIATIONS.get(category, category)
+
+
+def format_category_combo(categories: list[str] | tuple[str, ...]) -> str:
+    return "+".join(abbreviate_category(category) for category in categories)
+
+
 def numeric_summary(values: list[int]) -> str:
     if not values:
         return "n/a"
@@ -93,6 +110,37 @@ def metric_line(name: str, value: str) -> None:
     print(f"  {color((name + ':').ljust(26), DIM)} {value}")
 
 
+def section(text: str) -> None:
+    width = 88
+    label = f" {text} "
+    line = label + "-" * max(0, width - len(label))
+    print(color(line, HEADER))
+
+
+def table_value(value: str, column_name: str) -> str:
+    if column_name == "train" and value != "0":
+        return color(value, GREEN)
+    if column_name == "test" and value != "0":
+        return color(value, BLUE)
+    if column_name == "total":
+        return color(value, BOLD)
+    if column_name == "Yes":
+        return color(value, GREEN)
+    if column_name == "No":
+        return color(value, YELLOW)
+    if column_name == "conflict":
+        return color(value, RED)
+    return value
+
+
+def print_prompt_box(text: str) -> None:
+    lines = text.splitlines()
+    print(color("  ----- prompt -----", DIM))
+    for line in lines:
+        print(f"  {line}")
+    print(color("  ------------------", DIM))
+
+
 def authority_setting(row: dict[str, Any]) -> dict[str, Any]:
     setting = row.get("AuthoritySetting")
     if setting:
@@ -103,6 +151,16 @@ def authority_setting(row: dict[str, Any]) -> dict[str, Any]:
 def query_attributes(row: dict[str, Any]) -> dict[str, Any]:
     query = row.get("AttributeCombination") or row.get("Query") or {}
     return query.get("attributes") or {}
+
+
+def query_tool(row: dict[str, Any]) -> str:
+    query = row.get("AttributeCombination") or row.get("Query") or {}
+    tool = query.get("tool")
+    if tool:
+        return str(tool)
+    setting = authority_setting(row)
+    tool = setting.get("tool")
+    return str(tool) if tool else ""
 
 
 def row_stats(row: dict[str, Any]) -> dict[str, Any]:
@@ -124,6 +182,7 @@ def row_stats(row: dict[str, Any]) -> dict[str, Any]:
             break
 
     return {
+        "text": row.get("text", ""),
         "label": row.get("Label", ""),
         "is_conflict": bool(metadata.get("is_conflict", False)),
         "user_count": len(users),
@@ -132,7 +191,9 @@ def row_stats(row: dict[str, Any]) -> dict[str, Any]:
         "top_authority": top_authority,
         "target_user": target_user,
         "query_k": sum(value is not None for value in attrs.values()),
-        "categories": "+".join(metadata.get("categories") or sorted(attrs)),
+        "tool": query_tool(row),
+        "category_combo": tuple(metadata.get("categories") or sorted(attrs)),
+        "categories": format_category_combo(metadata.get("categories") or sorted(attrs)),
         "total_rules": total_rules,
         "rules_per_user_min": min(rules_per_user) if rules_per_user else 0,
         "rules_per_user_max": max(rules_per_user) if rules_per_user else 0,
@@ -146,11 +207,40 @@ def print_table(rows: list[list[str]], *, title: str) -> None:
         return
     widths = [max(len(row[index]) for row in rows) for index in range(len(rows[0]))]
     print(title)
+    headers = rows[0]
     for row_index, row in enumerate(rows):
-        print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
+        rendered = []
+        for index, value in enumerate(row):
+            cell = value.ljust(widths[index])
+            if row_index == 0:
+                cell = color(cell, BOLD)
+            else:
+                cell = table_value(cell, headers[index])
+            rendered.append(cell)
+        print("  ".join(rendered))
         if row_index == 0:
-            print("  ".join("-" * width for width in widths))
+            print(color("  ".join("-" * width for width in widths), DIM))
     print()
+
+
+def choose_prompt_example(
+    dataset: str,
+    all_groups: dict[tuple[str, str], list[dict[str, Any]]],
+) -> tuple[str, dict[str, Any] | None]:
+    preferred_user_count = 2 if dataset == "ToolAuthority" else None
+
+    if preferred_user_count is not None:
+        for split in ("train", "test"):
+            for row in all_groups.get((dataset, split), []):
+                if row["user_count"] == preferred_user_count:
+                    return split, row
+
+    for split in ("train", "test"):
+        stats = all_groups.get((dataset, split), [])
+        if stats:
+            return split, stats[0]
+
+    return "", None
 
 
 all_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -160,10 +250,7 @@ for path in paths:
     all_groups[(dataset, split)] = [row_stats(row) for row in read_jsonl(path)]
 
 
-def title(text: str) -> None:
-    print(color(text, BOLD))
-
-
+section("Authority Data Stats")
 print(f"{color('data_dir:', DIM)} {data_dir}")
 print()
 
@@ -186,59 +273,87 @@ for (dataset, split), stats in sorted(all_groups.items()):
             f"{statistics.mean(rules):.2f}" if rules else "n/a",
         ]
     )
-print_table(compact_rows, title=color("Split Summary", BOLD))
+section("Split Summary")
+print_table(compact_rows, title=color("Rows, labels, conflicts, users, and rule counts", DIM))
 
-for (dataset, split), stats in sorted(all_groups.items()):
-    total = len(stats)
-    title(f"{dataset}/{split}")
-    metric_line(
-        "labels",
-        format_counter_compact(
-            Counter(row["label"] for row in stats),
-            total,
-            colors={"Yes": GREEN, "No": YELLOW},
-        ),
-    )
-    metric_line(
-        "conflict",
-        format_counter_compact(
-            Counter(row["is_conflict"] for row in stats),
-            total,
-            colors={True: RED, False: GREEN},
-        ),
-    )
-    metric_line(
-        "user_count",
-        format_counter_compact(
-            Counter(row["user_count"] for row in stats),
-            total,
-            colors={1: CYAN, 2: BLUE, 3: MAGENTA, 4: YELLOW},
-        ),
-    )
-    metric_line("query_k", format_counter_compact(Counter(row["query_k"] for row in stats), total))
-    metric_line("rules", numeric_summary([row["total_rules"] for row in stats]))
-    metric_line("category_pair", format_counter_compact(Counter(row["categories"] for row in stats), total))
-    metric_line(
-        "top_user",
-        format_counter_compact(Counter(row["top_priority_user"] for row in stats), total),
+section("Category Combinations")
+for dataset in sorted({dataset for dataset, _ in all_groups}):
+    category_rows = [["category_combo", "train", "test", "total"]]
+    split_counters = {
+        split: Counter(row["categories"] for row in all_groups.get((dataset, split), []))
+        for split in ("train", "test")
+    }
+    combos = sorted(set(split_counters["train"]) | set(split_counters["test"]))
+    for combo in combos:
+        train_count = split_counters["train"][combo]
+        test_count = split_counters["test"][combo]
+        category_rows.append(
+            [
+                combo,
+                str(train_count),
+                str(test_count),
+                str(train_count + test_count),
+            ]
+        )
+    print_table(
+        category_rows,
+        title=color(f"{dataset} category combinations by split", DIM),
     )
 
-    label_mismatch = sum(not row["label_matches_top"] for row in stats)
-    target_mismatch = sum(not row["target_matches_top"] for row in stats)
-    check_color = GREEN if label_mismatch == 0 and target_mismatch == 0 else RED
-    metric_line(
-        "checks",
-        color(
-            f"label!=top {label_mismatch}, target!=top {target_mismatch}",
-            check_color,
-        ),
-    )
+tool_datasets = sorted(
+    {
+        dataset
+        for dataset, _ in all_groups
+        if any(
+            row["tool"]
+            for split in ("train", "test")
+            for row in all_groups.get((dataset, split), [])
+        )
+    }
+)
+for dataset in tool_datasets:
+    split_counters = {
+        split: Counter(
+            row["tool"]
+            for row in all_groups.get((dataset, split), [])
+            if row["tool"]
+        )
+        for split in ("train", "test")
+    }
+    tools = sorted(set(split_counters["train"]) | set(split_counters["test"]))
+    if not tools:
+        continue
+    tool_rows = [["tool", "train", "test", "total"]]
+    for tool in tools:
+        train_count = split_counters["train"][tool]
+        test_count = split_counters["test"][tool]
+        tool_rows.append(
+            [
+                tool,
+                str(train_count),
+                str(test_count),
+                str(train_count + test_count),
+            ]
+        )
+    section("Tool Split")
+    print_table(tool_rows, title=color(f"{dataset} tools by split", DIM))
+
+section("Prompt Examples")
+for dataset in sorted({dataset for dataset, _ in all_groups}):
+    example_split, example = choose_prompt_example(dataset, all_groups)
+    if example is None:
+        continue
+
+    print(color(f"{dataset}/{example_split}", BOLD))
+    print_prompt_box(example["text"])
+    metric_line("label", color(example["label"], GREEN if example["label"] == "Yes" else YELLOW))
+    metric_line("user_count", color(example["user_count"], CYAN))
     print()
 
 combined = [row for stats in all_groups.values() for row in stats]
 combined_total = len(combined)
 if len(all_groups) > 1:
-    title("Overall")
+    section("Overall")
     metric_line("rows", color(combined_total, BOLD))
     metric_line(
         "labels",
