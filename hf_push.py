@@ -458,7 +458,7 @@ def build_dataset_card(
             if info["rows"] == 0:
                 continue
             lines.append(f"  - split: {split_name}")
-            lines.append(f"    path: data/{config_name}/{split_name}-*.parquet")
+            lines.append(f"    path: {config_name}/{split_name}-*.parquet")
     lines.extend(
         [
             "---",
@@ -522,7 +522,7 @@ def print_dataset_card_metadata(summary: dict[str, dict[str, dict[str, Any]]]) -
                 continue
             print(
                 f"[hf_push]     {split_name}: "
-                f"data/{config_name}/{split_name}-*.parquet"
+                f"{config_name}/{split_name}-*.parquet"
             )
 
 
