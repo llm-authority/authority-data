@@ -8,7 +8,9 @@ from typing import Any, Iterable
 
 
 POLARITIES = ("yes", "no")
-USER_IDS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+USER_IDS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + tuple(
+    f"A{letter}" for letter in "ABCDEFGHIJKLMNOPQRSTUVWX"
+)
 
 
 def parse_user_counts(num_users: int | str | Iterable[int]) -> list[int]:

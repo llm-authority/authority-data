@@ -20,8 +20,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "data" / "base"
 GENERAL_AUTHORITY = "GeneralAuthorityV1"
 TOOL_AUTHORITY = "ToolAuthorityV1"
+GENERAL_AUTHORITY_V3 = "GeneralAuthorityV3"
+TOOL_AUTHORITY_V3 = "ToolAuthorityV3"
 DEFAULT_TRAIN_NUM_USERS = "1,2,3"
 DEFAULT_TEST_NUM_USERS = "1,2,3,4,5"
+DEFAULT_V3_TRAIN_NUM_USERS = "1-5"
+DEFAULT_V3_TEST_NUM_USERS = "5-50"
+DEFAULT_V3_CONFLICT_RATIOS = tuple(round(index / 10, 1) for index in range(1, 10))
+DEFAULT_V3_MAX_RULES_PER_SCENARIO = 1000
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -44,8 +50,23 @@ from src.label_based_polarity_sampling import (
     label_items,
     make_case_specs,
     make_selected_labels,
+    opposite_label,
     parse_user_counts,
 )
+
+
+def progress_iter(iterable, *, desc: str, total: int | None = None, unit: str = "it"):
+    try:
+        from tqdm.auto import tqdm
+    except ImportError:
+        return iterable
+    return tqdm(
+        iterable,
+        desc=desc,
+        total=total,
+        unit=unit,
+        disable=not sys.stderr.isatty(),
+    )
 
 
 def _sample_expanded_authority_data(
@@ -150,7 +171,12 @@ def multi_attribute_sampling(
     rng = rng or random
     results: list[dict[str, Any]] = []
 
-    for category_idx, category in enumerate(categories):
+    for category_idx, category in progress_iter(
+        enumerate(categories),
+        desc="sample attributes",
+        total=len(categories),
+        unit="category",
+    ):
         category_names = list(category["categories"])
         candidates_by_category = {
             name: list(category["candidates_by_category"][name])
@@ -258,7 +284,12 @@ def polarity_sampling_multi(
     user_counts = parse_user_counts(num_users)
     results: list[dict[str, Any]] = []
 
-    for row_idx, sample in enumerate(samples):
+    for row_idx, sample in progress_iter(
+        enumerate(samples),
+        desc="expand polarity",
+        total=len(samples),
+        unit="sample",
+    ):
         category_values = {
             category: list(values)
             for category, values in sample["category_values"].items()
@@ -646,7 +677,12 @@ def deduplicate_base_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduplicated = []
     seen = set()
 
-    for row in rows:
+    for row in progress_iter(
+        rows,
+        desc="deduplicate rows",
+        total=len(rows),
+        unit="row",
+    ):
         key = _semantic_row_key(row)
         if key in seen:
             continue
@@ -674,6 +710,703 @@ def summarize_base_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, int]]
             Counter(str(len(row["AuthoritySetting"]["users"])) for row in rows)
         ),
     }
+
+
+def parse_user_count_spec(value: int | str | Iterable[int]) -> list[int]:
+    if isinstance(value, str) and "-" in value:
+        start_text, sep, end_text = value.partition("-")
+        if sep and start_text.strip() and end_text.strip():
+            start = int(start_text.strip())
+            end = int(end_text.strip())
+            if end < start:
+                raise ValueError(f"Invalid user count range: {value!r}")
+            return parse_user_counts(range(start, end + 1))
+    return parse_user_counts(value)
+
+
+def parse_conflict_ratios(value: str | Iterable[float]) -> list[float]:
+    ratios = (
+        [
+            float(part.strip())
+            for part in value.split(",")
+            if part.strip()
+        ]
+        if isinstance(value, str)
+        else list(value)
+    )
+    if not ratios:
+        raise ValueError("At least one conflict ratio is required.")
+    normalized = []
+    for ratio in ratios:
+        if not 0 < ratio < 1:
+            raise ValueError("Conflict ratios must be between 0 and 1.")
+        rounded = round(ratio, 3)
+        if rounded not in normalized:
+            normalized.append(rounded)
+    return normalized
+
+
+def category_subset(
+    categories: CategoryValues,
+    selected_categories: Iterable[str],
+) -> CategoryValues:
+    return {
+        category: list(categories[category])
+        for category in selected_categories
+    }
+
+
+def make_v3_rule_template(
+    category_values: dict[str, list[str]],
+    selected_attributes: dict[str, str],
+    selected_label: str,
+    filler_labels: dict[tuple[str, str], str],
+) -> list[dict[str, str]]:
+    rules = []
+    for category, values in category_values.items():
+        selected_value = selected_attributes[category]
+        for value in values:
+            label = (
+                selected_label
+                if value == selected_value
+                else filler_labels[(category, value)]
+            )
+            rules.append(
+                {
+                    "category": category,
+                    "value": value,
+                    "label": label,
+                }
+            )
+    return rules
+
+
+def v3_conflict_count(user_count: int, conflict_ratio: float) -> int:
+    lower_priority_count = user_count - 1
+    if lower_priority_count < 1:
+        raise ValueError("V3 conflict rows require at least two users.")
+    return max(1, min(lower_priority_count, round(lower_priority_count * conflict_ratio)))
+
+
+def make_v3_row(
+    *,
+    dataset_name: str,
+    sample: dict[str, Any],
+    user_count: int,
+    target_label: str,
+    conflict_ratio: float,
+    random_fill_idx: int,
+    case_id: int,
+    rng: random.Random,
+    tool_name_list: list[str],
+    max_rules_per_scenario: int | None,
+) -> dict[str, Any] | None:
+    category_values = {
+        category: list(values)
+        for category, values in sample["category_values"].items()
+    }
+    per_user_rule_count = sum(len(values) for values in category_values.values())
+    rule_count = per_user_rule_count * user_count
+    if max_rules_per_scenario is not None and rule_count > max_rules_per_scenario:
+        return None
+
+    selected_attributes = {
+        category: rng.choice(values)
+        for category, values in category_values.items()
+    }
+    filler_labels = {
+        (category, value): rng.choice(("yes", "no"))
+        for category, values in category_values.items()
+        for value in values
+        if value != selected_attributes[category]
+    }
+    opposite = opposite_label(target_label)
+    rule_templates = {
+        target_label: make_v3_rule_template(
+            category_values,
+            selected_attributes,
+            target_label,
+            filler_labels,
+        ),
+        opposite: make_v3_rule_template(
+            category_values,
+            selected_attributes,
+            opposite,
+            filler_labels,
+        ),
+    }
+    user_ids = list(USER_IDS[:user_count])
+    priority = rng.sample(user_ids, k=len(user_ids))
+    target_user = priority[0]
+    lower_priority_users = priority[1:]
+    conflict_user_count = v3_conflict_count(user_count, conflict_ratio)
+    conflict_users = set(rng.sample(lower_priority_users, k=conflict_user_count))
+    authority_setting = []
+    for user_id in user_ids:
+        selected_label = opposite if user_id in conflict_users else target_label
+        authority_setting.append(
+            {
+                "user": user_id,
+                "authority": selected_label,
+                "rules": [
+                    dict(rule)
+                    for rule in rule_templates[selected_label]
+                ],
+            }
+        )
+
+    tool_name = rng.choice(tool_name_list) if tool_name_list else None
+    row = make_base_row(
+        {
+            "category_idx": sample["category_idx"],
+            "k_pair_idx": sample["k_pair_idx"],
+            "sample_idx": sample["sample_idx"],
+            "case_id": case_id,
+            "random_fill_idx": random_fill_idx,
+            "user_count": user_count,
+            "target_user": target_user,
+            "target_label": target_label,
+            "category_axes": sample["category_axes"],
+            "categories": sample["categories"],
+            "category_candidates": sample["category_candidates"],
+            "category_ks": sample["category_ks"],
+            "category_values": category_values,
+            "user1_selected": {"attributes": selected_attributes},
+            "authority_setting": authority_setting,
+            "priority": priority,
+            "label": target_label,
+            "user_conflict": "yes",
+        },
+        dataset_name=dataset_name,
+        tool_name=tool_name,
+    )
+    actual_conflict_ratio = conflict_user_count / (user_count - 1)
+    row["metadata"]["v3"] = {
+        "main_user": target_user,
+        "user_count": user_count,
+        "lower_priority_user_count": user_count - 1,
+        "requested_conflict_ratio": conflict_ratio,
+        "actual_conflict_ratio": actual_conflict_ratio,
+        "conflict_user_count": conflict_user_count,
+        "agreeing_lower_priority_user_count": (
+            user_count - 1 - conflict_user_count
+        ),
+    }
+    return row
+
+
+def v3_candidate_rule_count(sample: dict[str, Any], user_count: int) -> int:
+    return user_count * sum(
+        len(values)
+        for values in sample["category_values"].values()
+    )
+
+
+def generate_v3_sampled_split_rows(
+    *,
+    dataset_name: str,
+    categories: CategoryValues,
+    user_counts: Iterable[int],
+    conflict_ratios: Iterable[float],
+    seed: int,
+    num_categories: int | None,
+    max_k_pairs_per_category: int,
+    num_samples_per_k_pair: int,
+    num_random_fills: int,
+    max_rules_per_scenario: int | None,
+    target_count: int,
+    tool_names: Iterable[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if target_count < 0:
+        raise ValueError("target split row counts must be non-negative")
+    if max_rules_per_scenario is not None and max_rules_per_scenario < 1:
+        raise ValueError("max_rules_per_scenario must be at least 1")
+
+    rng = random.Random(seed)
+    usable_user_counts = [count for count in user_counts if count >= 2]
+    skipped_user_counts = [count for count in user_counts if count < 2]
+    ratios = list(conflict_ratios)
+    category_combinations = make_multi_category_combinations(
+        categories,
+        category_counts=range(2, len(categories) + 1),
+    )
+    sampled_categories = category_sampling(
+        category_combinations,
+        n=num_categories,
+        rng=rng,
+    )
+    attribute_samples = multi_attribute_sampling(
+        sampled_categories,
+        max_k_pairs_per_category=max_k_pairs_per_category,
+        num_samples_per_k_pair=num_samples_per_k_pair,
+        rng=rng,
+    )
+    tool_name_list = list(tool_names) if tool_names is not None else []
+
+    feasible_pairs = [
+        (sample, user_count)
+        for sample in attribute_samples
+        for user_count in usable_user_counts
+        if max_rules_per_scenario is None
+        or v3_candidate_rule_count(sample, user_count) <= max_rules_per_scenario
+    ]
+    total_candidate_count = (
+        len(attribute_samples)
+        * len(usable_user_counts)
+        * 2
+        * len(ratios)
+        * num_random_fills
+    )
+    feasible_candidate_count = (
+        len(feasible_pairs)
+        * 2
+        * len(ratios)
+        * num_random_fills
+    )
+    skipped_by_rule_limit = total_candidate_count - feasible_candidate_count
+    if target_count and not feasible_pairs:
+        raise ValueError(
+            f"No feasible V3 rows for {dataset_name}; try increasing "
+            "--v3-max-rules-per-scenario or reducing user/category settings."
+        )
+
+    ratio_plan: list[float] = []
+    while len(ratio_plan) < target_count:
+        ratio_batch = list(ratios)
+        rng.shuffle(ratio_batch)
+        ratio_plan.extend(ratio_batch)
+    ratio_plan = ratio_plan[:target_count]
+    rng.shuffle(ratio_plan)
+
+    rows: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    duplicate_attempts = 0
+    max_attempts = max(100, target_count * 50)
+    attempts = 0
+    progress_bar = progress_iter(
+        ratio_plan,
+        desc=f"sample {dataset_name} rows",
+        total=len(ratio_plan),
+        unit="row",
+    )
+    progress = iter(progress_bar)
+    while len(rows) < target_count and attempts < max_attempts:
+        conflict_ratio = (
+            ratio_plan[len(rows)]
+            if len(rows) < len(ratio_plan)
+            else rng.choice(ratios)
+        )
+        attempts += 1
+        sample, user_count = rng.choice(feasible_pairs)
+        row = make_v3_row(
+            dataset_name=dataset_name,
+            sample=sample,
+            user_count=user_count,
+            target_label=rng.choice(("yes", "no")),
+            conflict_ratio=conflict_ratio,
+            random_fill_idx=attempts % max(1, num_random_fills),
+            case_id=attempts - 1,
+            rng=rng,
+            tool_name_list=tool_name_list,
+            max_rules_per_scenario=max_rules_per_scenario,
+        )
+        if row is None:
+            continue
+        key = _semantic_row_key(row)
+        if key in seen_keys:
+            duplicate_attempts += 1
+            continue
+        seen_keys.add(key)
+        rows.append(row)
+        try:
+            next(progress)
+        except StopIteration:
+            pass
+
+    if hasattr(progress_bar, "close"):
+        progress_bar.close()
+    if len(rows) < target_count:
+        raise ValueError(
+            f"Only generated {len(rows)} unique V3 rows for {dataset_name}, "
+            f"but {target_count} were requested."
+        )
+
+    counts = {
+        "category_candidates": len(category_combinations),
+        "sampled_categories": len(sampled_categories),
+        "attribute_samples": len(attribute_samples),
+        "candidate_rows_estimate": total_candidate_count,
+        "feasible_candidate_rows_estimate": feasible_candidate_count,
+        "rows_before_deduplication": attempts - duplicate_attempts,
+        "rows": len(rows),
+        "dropped_duplicates": duplicate_attempts,
+        "skipped_user_counts": skipped_user_counts,
+        "skipped_by_rule_limit": skipped_by_rule_limit,
+        "max_rules_per_scenario": max_rules_per_scenario,
+        "distribution": summarize_base_rows(rows),
+    }
+    return rows, counts
+
+
+def generate_v3_split_rows(
+    *,
+    dataset_name: str,
+    categories: CategoryValues,
+    user_counts: Iterable[int],
+    conflict_ratios: Iterable[float],
+    seed: int,
+    num_categories: int | None,
+    max_k_pairs_per_category: int,
+    num_samples_per_k_pair: int,
+    num_random_fills: int,
+    max_rules_per_scenario: int | None,
+    tool_names: Iterable[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if max_rules_per_scenario is not None and max_rules_per_scenario < 1:
+        raise ValueError("max_rules_per_scenario must be at least 1")
+
+    rng = random.Random(seed)
+    usable_user_counts = [count for count in user_counts if count >= 2]
+    skipped_user_counts = [count for count in user_counts if count < 2]
+    ratios = list(conflict_ratios)
+    category_combinations = make_multi_category_combinations(
+        categories,
+        category_counts=range(2, len(categories) + 1),
+    )
+    sampled_categories = category_sampling(
+        category_combinations,
+        n=num_categories,
+        rng=rng,
+    )
+    attribute_samples = multi_attribute_sampling(
+        sampled_categories,
+        max_k_pairs_per_category=max_k_pairs_per_category,
+        num_samples_per_k_pair=num_samples_per_k_pair,
+        rng=rng,
+    )
+    tool_name_list = list(tool_names) if tool_names is not None else []
+
+    rows = []
+    case_id = 0
+    skipped_by_rule_limit = 0
+    desc = f"generate {dataset_name} rows"
+    for sample in progress_iter(
+        attribute_samples,
+        desc=desc,
+        total=len(attribute_samples),
+        unit="sample",
+    ):
+        category_values = {
+            category: list(values)
+            for category, values in sample["category_values"].items()
+        }
+        selected_attributes = {
+            category: rng.choice(values)
+            for category, values in category_values.items()
+        }
+        filler_labels = {
+            (category, value): rng.choice(("yes", "no"))
+            for category, values in category_values.items()
+            for value in values
+            if value != selected_attributes[category]
+        }
+
+        for user_count in usable_user_counts:
+            user_ids = list(USER_IDS[:user_count])
+            for target_label in ("yes", "no"):
+                opposite = opposite_label(target_label)
+                rule_templates = {
+                    target_label: make_v3_rule_template(
+                        category_values,
+                        selected_attributes,
+                        target_label,
+                        filler_labels,
+                    ),
+                    opposite: make_v3_rule_template(
+                        category_values,
+                        selected_attributes,
+                        opposite,
+                        filler_labels,
+                    ),
+                }
+                for conflict_ratio in ratios:
+                    for random_fill_idx in range(num_random_fills):
+                        priority = rng.sample(user_ids, k=len(user_ids))
+                        target_user = priority[0]
+                        lower_priority_users = priority[1:]
+                        conflict_user_count = v3_conflict_count(
+                            user_count,
+                            conflict_ratio,
+                        )
+                        conflict_users = set(
+                            rng.sample(lower_priority_users, k=conflict_user_count)
+                        )
+                        authority_setting = []
+                        for user_id in user_ids:
+                            selected_label = (
+                                opposite if user_id in conflict_users else target_label
+                            )
+                            authority_setting.append(
+                                {
+                                    "user": user_id,
+                                    "authority": selected_label,
+                                    "rules": [
+                                        dict(rule)
+                                        for rule in rule_templates[selected_label]
+                                    ],
+                                }
+                            )
+
+                        rule_count = count_scenario_rules(authority_setting)
+                        if (
+                            max_rules_per_scenario is not None
+                            and rule_count > max_rules_per_scenario
+                        ):
+                            skipped_by_rule_limit += 1
+                            continue
+
+                        tool_name = rng.choice(tool_name_list) if tool_name_list else None
+                        row = make_base_row(
+                            {
+                                "category_idx": sample["category_idx"],
+                                "k_pair_idx": sample["k_pair_idx"],
+                                "sample_idx": sample["sample_idx"],
+                                "case_id": case_id,
+                                "random_fill_idx": random_fill_idx,
+                                "user_count": user_count,
+                                "target_user": target_user,
+                                "target_label": target_label,
+                                "category_axes": sample["category_axes"],
+                                "categories": sample["categories"],
+                                "category_candidates": sample["category_candidates"],
+                                "category_ks": sample["category_ks"],
+                                "category_values": category_values,
+                                "user1_selected": {"attributes": selected_attributes},
+                                "authority_setting": authority_setting,
+                                "priority": priority,
+                                "label": target_label,
+                                "user_conflict": "yes",
+                            },
+                            dataset_name=dataset_name,
+                            tool_name=tool_name,
+                        )
+                        actual_conflict_ratio = conflict_user_count / (
+                            user_count - 1
+                        )
+                        row["metadata"]["v3"] = {
+                            "main_user": target_user,
+                            "user_count": user_count,
+                            "lower_priority_user_count": user_count - 1,
+                            "requested_conflict_ratio": conflict_ratio,
+                            "actual_conflict_ratio": actual_conflict_ratio,
+                            "conflict_user_count": conflict_user_count,
+                            "agreeing_lower_priority_user_count": (
+                                user_count - 1 - conflict_user_count
+                            ),
+                        }
+                        rows.append(row)
+                        case_id += 1
+
+    deduplicated = deduplicate_base_rows(rows)
+    counts = {
+        "category_candidates": len(category_combinations),
+        "sampled_categories": len(sampled_categories),
+        "attribute_samples": len(attribute_samples),
+        "rows_before_deduplication": len(rows),
+        "rows": len(deduplicated),
+        "dropped_duplicates": len(rows) - len(deduplicated),
+        "skipped_user_counts": skipped_user_counts,
+        "skipped_by_rule_limit": skipped_by_rule_limit,
+        "max_rules_per_scenario": max_rules_per_scenario,
+        "distribution": summarize_base_rows(deduplicated),
+    }
+    return deduplicated, counts
+
+
+def generate_v3_base_authority_dataset_splits(
+    *,
+    seed: int = 42,
+    num_categories: int | None = None,
+    max_k_pairs_per_category: int = 10,
+    num_samples_per_k_pair: int = 10,
+    train_num_users: int | str | Iterable[int] = DEFAULT_V3_TRAIN_NUM_USERS,
+    test_num_users: int | str | Iterable[int] = DEFAULT_V3_TEST_NUM_USERS,
+    conflict_ratios: str | Iterable[float] = DEFAULT_V3_CONFLICT_RATIOS,
+    num_random_fills: int = 2,
+    max_rules_per_scenario: int | None = DEFAULT_V3_MAX_RULES_PER_SCENARIO,
+    general_train_rows: int | None = 500,
+    general_test_rows: int | None = 1500,
+    tool_train_rows: int | None = 1000,
+    tool_test_rows: int | None = 3000,
+) -> tuple[dict[str, dict[str, list[dict[str, Any]]]], dict[str, Any]]:
+    train_user_counts = parse_user_count_spec(train_num_users)
+    test_user_counts = parse_user_count_spec(test_num_users)
+    ratios = parse_conflict_ratios(conflict_ratios)
+    split_specs = {
+        GENERAL_AUTHORITY_V3: {
+            "train": {
+                "categories": category_subset(
+                    DEFAULT_CATEGORIES,
+                    GENERAL_AUTHORITY_TRAIN_CATEGORIES,
+                ),
+                "user_counts": train_user_counts,
+                "target_count": general_train_rows,
+                "tool_names": None,
+                "seed": seed + 3000,
+            },
+            "test": {
+                "categories": category_subset(
+                    DEFAULT_CATEGORIES,
+                    GENERAL_AUTHORITY_TEST_CATEGORIES,
+                ),
+                "user_counts": test_user_counts,
+                "target_count": general_test_rows,
+                "tool_names": None,
+                "seed": seed + 3100,
+            },
+        },
+        TOOL_AUTHORITY_V3: {
+            "train": {
+                "categories": category_subset(
+                    TOOL_AUTHORITY_CATEGORIES,
+                    TOOL_AUTHORITY_TRAIN_CATEGORIES,
+                ),
+                "user_counts": train_user_counts,
+                "target_count": tool_train_rows,
+                "tool_names": TRAIN_TOOL_NAMES,
+                "seed": seed + 4000,
+            },
+            "test": {
+                "categories": category_subset(
+                    TOOL_AUTHORITY_CATEGORIES,
+                    TOOL_AUTHORITY_TEST_CATEGORIES,
+                ),
+                "user_counts": test_user_counts,
+                "target_count": tool_test_rows,
+                "tool_names": TEST_TOOL_NAMES,
+                "seed": seed + 4100,
+            },
+        },
+    }
+
+    datasets: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    counts: dict[str, Any] = {
+        "conflict_ratios": ratios,
+        "train_user_counts": train_user_counts,
+        "test_user_counts": test_user_counts,
+        "datasets": {},
+    }
+    for dataset_name, split_spec in progress_iter(
+        split_specs.items(),
+        desc="generate V3 datasets",
+        total=len(split_specs),
+        unit="dataset",
+    ):
+        datasets[dataset_name] = {}
+        counts["datasets"][dataset_name] = {}
+        for split_name, spec in progress_iter(
+            split_spec.items(),
+            desc=f"generate {dataset_name} splits",
+            total=len(split_spec),
+            unit="split",
+        ):
+            if spec["target_count"] is None:
+                rows, split_counts = generate_v3_split_rows(
+                    dataset_name=dataset_name,
+                    categories=spec["categories"],
+                    user_counts=spec["user_counts"],
+                    conflict_ratios=ratios,
+                    seed=spec["seed"],
+                    num_categories=num_categories,
+                    max_k_pairs_per_category=max_k_pairs_per_category,
+                    num_samples_per_k_pair=num_samples_per_k_pair,
+                    num_random_fills=num_random_fills,
+                    max_rules_per_scenario=max_rules_per_scenario,
+                    tool_names=spec["tool_names"],
+                )
+                sampled_rows = rows
+            else:
+                sampled_rows, split_counts = generate_v3_sampled_split_rows(
+                    dataset_name=dataset_name,
+                    categories=spec["categories"],
+                    user_counts=spec["user_counts"],
+                    conflict_ratios=ratios,
+                    seed=spec["seed"],
+                    num_categories=num_categories,
+                    max_k_pairs_per_category=max_k_pairs_per_category,
+                    num_samples_per_k_pair=num_samples_per_k_pair,
+                    num_random_fills=num_random_fills,
+                    max_rules_per_scenario=max_rules_per_scenario,
+                    target_count=spec["target_count"],
+                    tool_names=spec["tool_names"],
+                )
+            reindexed_rows = add_row_ids(sampled_rows)
+            datasets[dataset_name][split_name] = reindexed_rows
+            counts["datasets"][dataset_name][split_name] = split_counts | {
+                "written_rows": len(reindexed_rows),
+                "target_count": spec["target_count"],
+                "written_distribution": summarize_base_rows(reindexed_rows),
+            }
+    return datasets, counts
+
+
+def write_v3_dataset_splits(
+    datasets: dict[str, dict[str, list[dict[str, Any]]]],
+    *,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+) -> dict[str, dict[str, int]]:
+    written_counts = {}
+    for dataset_name, splits in datasets.items():
+        written_counts[dataset_name] = {}
+        for split_name, rows in splits.items():
+            path = output_dir / dataset_name / f"{split_name}.jsonl"
+            write_jsonl(path, rows)
+            written_counts[dataset_name][split_name] = len(rows)
+    return written_counts
+
+
+def sample_v3_split_rows(
+    rows: list[dict[str, Any]],
+    *,
+    target_count: int | None,
+    conflict_ratios: Iterable[float],
+    rng: random.Random,
+) -> list[dict[str, Any]]:
+    if target_count is None:
+        return list(rows)
+    if target_count < 0:
+        raise ValueError("target split row counts must be non-negative")
+    if target_count > len(rows):
+        raise ValueError(
+            f"Requested {target_count} rows, but only {len(rows)} rows are available."
+        )
+
+    selected_indices: list[int] = []
+    selected_set: set[int] = set()
+    rows_by_ratio: dict[float, list[int]] = {}
+    for index, row in enumerate(rows):
+        ratio = row["metadata"]["v3"]["requested_conflict_ratio"]
+        rows_by_ratio.setdefault(ratio, []).append(index)
+
+    for ratio in conflict_ratios:
+        candidates = rows_by_ratio.get(ratio, [])
+        if not candidates or len(selected_indices) >= target_count:
+            continue
+        index = rng.choice(candidates)
+        selected_indices.append(index)
+        selected_set.add(index)
+
+    remaining_indices = [
+        index
+        for index in range(len(rows))
+        if index not in selected_set
+    ]
+    rng.shuffle(remaining_indices)
+    selected_indices.extend(
+        remaining_indices[: target_count - len(selected_indices)]
+    )
+    rng.shuffle(selected_indices)
+    return [rows[index] for index in selected_indices]
 
 
 def generate_base_authority_datasets(

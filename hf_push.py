@@ -1,8 +1,8 @@
 """Push authority datasets to the Hugging Face Hub.
 
-Run ``make_data.py`` and ``paraphrase_data.py`` first. This script loads base
-rows, replaces the Query block with cached LLM query paraphrases, and pushes the
-result.
+Run ``make_data.py`` first. For V2 configs, also run ``paraphrase_data.py`` so
+cached LLM query paraphrases are available. V1 and V3 configs are pushed from
+base rows directly.
 """
 
 from __future__ import annotations
@@ -26,10 +26,12 @@ DEFAULT_CACHE_PATH = (
 DEFAULT_CONFIGS = (
     "GeneralAuthorityV1",
     "GeneralAuthorityV2",
+    "GeneralAuthorityV3",
     "ToolAuthorityV1",
     "ToolAuthorityV2",
+    "ToolAuthorityV3",
 )
-DEFAULT_OLD_REMOTE_CONFIGS = ("GeneralAuthority", "ToolAuthority", "V1", "V2")
+DEFAULT_OLD_REMOTE_CONFIGS = ("GeneralAuthority", "ToolAuthority", "V1", "V2", "V3")
 DEFAULT_SPLITS = ("train", "test")
 
 from paraphrase_data import (
@@ -84,7 +86,8 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_CONFIGS),
         help=(
             "HF config names to push. Default: GeneralAuthorityV1 "
-            "GeneralAuthorityV2 ToolAuthorityV1 ToolAuthorityV2."
+            "GeneralAuthorityV2 GeneralAuthorityV3 ToolAuthorityV1 "
+            "ToolAuthorityV2 ToolAuthorityV3."
         ),
     )
     parser.add_argument(
@@ -93,7 +96,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Base directory names aligned with --configs. "
-            "Default: infer V2+ configs from their matching V1 base directory."
+            "Default: infer V2 configs from their matching V1 base directory; "
+            "V1 and V3 configs use same-named base directories."
         ),
     )
     parser.add_argument(
@@ -140,7 +144,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strict-cache",
         action="store_true",
-        help="Fail if any base row is missing from the paraphrase cache.",
+        help="For V2 configs, fail if any base row is missing from the paraphrase cache.",
     )
     parser.add_argument(
         "--delete-remote-configs",
@@ -148,7 +152,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Delete old remote config folders before pushing. If passed without "
-            "names, deletes GeneralAuthority, ToolAuthority, V1, and V2."
+            "names, deletes GeneralAuthority, ToolAuthority, V1, V2, and V3."
         ),
     )
     return parser.parse_args()
@@ -172,13 +176,28 @@ def split_path(base_dir: Path, source_config_name: str, split_name: str) -> Path
 
 
 def make_base_push_row(base_row: dict[str, Any], *, version: str) -> dict[str, Any]:
+    meta_data = {
+        "query": base_row["Query"],
+        "paraphrase_version": version,
+    }
+    v3_metadata = base_row.get("metadata", {}).get("v3")
+    if v3_metadata is not None:
+        v3_metadata = dict(v3_metadata)
+        user_count = v3_metadata.get("user_count")
+        if user_count is None:
+            user_count = base_row.get("metadata", {}).get("source", {}).get("user_count")
+        if user_count is None:
+            user_count = len(base_row["AuthoritySetting"]["users"])
+        v3_metadata["user_count"] = user_count
+        v3_metadata["lower_priority_user_count"] = v3_metadata.get(
+            "lower_priority_user_count",
+            user_count - 1,
+        )
+        meta_data["v3"] = v3_metadata
     return {
         "text": render_synthetic_paraphrase(base_row),
         "label": base_row["Label"],
-        "meta_data": {
-            "query": base_row["Query"],
-            "paraphrase_version": version,
-        },
+        "meta_data": meta_data,
     }
 
 
@@ -370,6 +389,16 @@ def build_dataset_dict(
     }
     if config_spec.use_cache:
         meta_features["query_meaning_score"] = Value("int64")
+    if config_spec.version == "v3":
+        meta_features["v3"] = {
+            "main_user": Value("string"),
+            "user_count": Value("int64"),
+            "lower_priority_user_count": Value("int64"),
+            "requested_conflict_ratio": Value("float64"),
+            "actual_conflict_ratio": Value("float64"),
+            "conflict_user_count": Value("int64"),
+            "agreeing_lower_priority_user_count": Value("int64"),
+        }
     features = Features(
         {
             "text": Value("string"),
@@ -473,18 +502,11 @@ def build_dataset_card(
         body = (
             "# AuthorityBench\n\n"
             "Synthetic authority-decision datasets with deterministic V1 "
-            "configs and paraphrased V2 configs.\n"
+            "configs, paraphrased V2 configs, and conflict stress-test V3 "
+            "configs.\n"
         )
 
-    usage = (
-        "\n## Hugging Face Loading\n\n"
-        "```python\n"
-        "from datasets import load_dataset\n\n"
-        f"ds = load_dataset(\"{repo_id}\", \"GeneralAuthorityV1\")\n"
-        "print(ds)\n"
-        "```\n"
-    )
-    return "\n".join(lines) + body.rstrip() + usage
+    return "\n".join(lines) + body.rstrip() + "\n"
 
 
 def upload_dataset_card(
@@ -546,14 +568,15 @@ def config_version(config_name: str) -> str:
     match = re.search(r"V(\d+)$", config_name)
     if not match:
         raise ValueError(
-            f"Config name must end with a version suffix like V1 or V2: {config_name}"
+            f"Config name must end with a version suffix like V1, V2, or V3: "
+            f"{config_name}"
         )
     return f"v{match.group(1)}"
 
 
 def default_source_config(config_name: str) -> str:
     version = config_version(config_name)
-    if version == "v1":
+    if version in {"v1", "v3"}:
         return config_name
     return re.sub(r"V\d+$", "V1", config_name)
 
@@ -574,7 +597,7 @@ def resolve_config_specs(
             config_name=config_name,
             source_config_name=source_config_name,
             version=config_version(config_name),
-            use_cache=config_version(config_name) != "v1",
+            use_cache=config_version(config_name) == "v2",
         )
         for config_name, source_config_name in zip(configs, source_configs)
     ]
@@ -628,7 +651,8 @@ def main() -> None:
     config_specs = resolve_config_specs(configs, args.source_configs)
     splits = list(args.splits)
     cache_path = args.cache_path.resolve()
-    cache = load_paraphrase_cache(cache_path)
+    needs_cache = any(config_spec.use_cache for config_spec in config_specs)
+    cache = load_paraphrase_cache(cache_path) if needs_cache else {}
     paraphrase_version = args.paraphrase_version.lower()
 
     for config_spec in config_specs:
@@ -640,7 +664,7 @@ def main() -> None:
 
     print(f"[hf_push] repo_id = {args.repo_id}")
     print(f"[hf_push] base_dir = {base_dir}")
-    print(f"[hf_push] cache_path = {cache_path}")
+    print(f"[hf_push] cache_path = {cache_path if needs_cache else 'unused'}")
     print(f"[hf_push] paraphrase_version = {paraphrase_version}")
     print(
         "[hf_push] configs = "
