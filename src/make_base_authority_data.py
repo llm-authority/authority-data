@@ -22,12 +22,20 @@ GENERAL_AUTHORITY = "GeneralAuthorityV1"
 TOOL_AUTHORITY = "ToolAuthorityV1"
 GENERAL_AUTHORITY_V3 = "GeneralAuthorityV3"
 TOOL_AUTHORITY_V3 = "ToolAuthorityV3"
+GENERAL_AUTHORITY_V4 = "GeneralAuthorityV4"
+TOOL_AUTHORITY_V4 = "ToolAuthorityV4"
+GENERAL_AUTHORITY_V5 = "GeneralAuthorityV5"
+TOOL_AUTHORITY_V5 = "ToolAuthorityV5"
 DEFAULT_TRAIN_NUM_USERS = "1,2,3"
 DEFAULT_TEST_NUM_USERS = "1,2,3,4,5"
 DEFAULT_V3_TRAIN_NUM_USERS = "1-5"
 DEFAULT_V3_TEST_NUM_USERS = "5-50"
 DEFAULT_V3_CONFLICT_RATIOS = tuple(round(index / 10, 1) for index in range(1, 10))
 DEFAULT_V3_MAX_RULES_PER_SCENARIO = 1000
+DEFAULT_V4_CONFLICT_RATIO = 0.5
+DEFAULT_V4_LOWER_MATCH_PROBABILITY = 0.5
+DEFAULT_V4_TRAIN_NUM_USERS = "2-4"
+DEFAULT_V4_TEST_NUM_USERS = "2-7"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -109,8 +117,7 @@ def _sample_expanded_authority_data(
         sample
         for sample in expanded_samples
         if max_rules_per_scenario is None
-        or count_scenario_rules(sample["authority_setting"])
-        <= max_rules_per_scenario
+        or count_scenario_rules(sample["authority_setting"]) <= max_rules_per_scenario
     ]
 
     counts = {
@@ -131,9 +138,7 @@ def make_multi_category_combinations(
     """Build category combinations across non-empty categories."""
 
     non_empty_categories = [
-        (category, values)
-        for category, values in categories.items()
-        if values
+        (category, values) for category, values in categories.items() if values
     ]
     if not non_empty_categories:
         return []
@@ -151,8 +156,7 @@ def make_multi_category_combinations(
                     "category_axes": [category for category, _ in category_group],
                     "categories": [category for category, _ in category_group],
                     "candidates_by_category": {
-                        category: list(values)
-                        for category, values in category_group
+                        category: list(values) for category, values in category_group
                     },
                 }
             )
@@ -251,8 +255,7 @@ def sample_attribute_products(
     while len(sampled) < target_size and attempts < max_attempts:
         attempts += 1
         candidate = tuple(
-            rng.choice(samples)
-            for samples in possible_samples_by_category
+            rng.choice(samples) for samples in possible_samples_by_category
         )
         if candidate in seen:
             continue
@@ -295,8 +298,7 @@ def polarity_sampling_multi(
             for category, values in sample["category_values"].items()
         }
         selected_attributes = {
-            category: rng.choice(values)
-            for category, values in category_values.items()
+            category: rng.choice(values) for category, values in category_values.items()
         }
         case_specs = make_case_specs(user_counts, rng=rng)
 
@@ -408,8 +410,7 @@ def _sample_expanded_tool_authority_data(
         sample
         for sample in expanded_samples
         if max_rules_per_scenario is None
-        or count_scenario_rules(sample["authority_setting"])
-        <= max_rules_per_scenario
+        or count_scenario_rules(sample["authority_setting"]) <= max_rules_per_scenario
     ]
 
     counts = {
@@ -455,8 +456,7 @@ def max_rules_per_user() -> int:
     """Return the largest number of attribute rules one user can receive."""
 
     return max(
-        len(category_pair["front_candidates"])
-        + len(category_pair["back_candidates"])
+        len(category_pair["front_candidates"]) + len(category_pair["back_candidates"])
         for category_pair in make_category_combinations(DEFAULT_CATEGORIES)
     )
 
@@ -504,8 +504,7 @@ def generate_authority_data(
             "categories": sample["categories"],
             "authority_setting": sample["authority_setting"],
             "query": ", ".join(
-                str(value)
-                for value in sample["user1_selected"]["attributes"].values()
+                str(value) for value in sample["user1_selected"]["attributes"].values()
             ),
             "priority": sample["priority"],
             "label": sample["label"],
@@ -557,9 +556,7 @@ def _rules_with_categories(
 
     for index, (value, label) in enumerate(setting["rules"]):
         category = (
-            sample["front_category"]
-            if index < front_count
-            else sample["back_category"]
+            sample["front_category"] if index < front_count else sample["back_category"]
         )
         rules.append(
             {
@@ -726,11 +723,7 @@ def parse_user_count_spec(value: int | str | Iterable[int]) -> list[int]:
 
 def parse_conflict_ratios(value: str | Iterable[float]) -> list[float]:
     ratios = (
-        [
-            float(part.strip())
-            for part in value.split(",")
-            if part.strip()
-        ]
+        [float(part.strip()) for part in value.split(",") if part.strip()]
         if isinstance(value, str)
         else list(value)
     )
@@ -750,10 +743,7 @@ def category_subset(
     categories: CategoryValues,
     selected_categories: Iterable[str],
 ) -> CategoryValues:
-    return {
-        category: list(categories[category])
-        for category in selected_categories
-    }
+    return {category: list(categories[category]) for category in selected_categories}
 
 
 def make_v3_rule_template(
@@ -785,7 +775,9 @@ def v3_conflict_count(user_count: int, conflict_ratio: float) -> int:
     lower_priority_count = user_count - 1
     if lower_priority_count < 1:
         raise ValueError("V3 conflict rows require at least two users.")
-    return max(1, min(lower_priority_count, round(lower_priority_count * conflict_ratio)))
+    return max(
+        1, min(lower_priority_count, round(lower_priority_count * conflict_ratio))
+    )
 
 
 def make_v3_row(
@@ -802,8 +794,7 @@ def make_v3_row(
     max_rules_per_scenario: int | None,
 ) -> dict[str, Any] | None:
     category_values = {
-        category: list(values)
-        for category, values in sample["category_values"].items()
+        category: list(values) for category, values in sample["category_values"].items()
     }
     per_user_rule_count = sum(len(values) for values in category_values.values())
     rule_count = per_user_rule_count * user_count
@@ -811,8 +802,7 @@ def make_v3_row(
         return None
 
     selected_attributes = {
-        category: rng.choice(values)
-        for category, values in category_values.items()
+        category: rng.choice(values) for category, values in category_values.items()
     }
     filler_labels = {
         (category, value): rng.choice(("yes", "no"))
@@ -848,10 +838,7 @@ def make_v3_row(
             {
                 "user": user_id,
                 "authority": selected_label,
-                "rules": [
-                    dict(rule)
-                    for rule in rule_templates[selected_label]
-                ],
+                "rules": [dict(rule) for rule in rule_templates[selected_label]],
             }
         )
 
@@ -888,17 +875,14 @@ def make_v3_row(
         "requested_conflict_ratio": conflict_ratio,
         "actual_conflict_ratio": actual_conflict_ratio,
         "conflict_user_count": conflict_user_count,
-        "agreeing_lower_priority_user_count": (
-            user_count - 1 - conflict_user_count
-        ),
+        "agreeing_lower_priority_user_count": (user_count - 1 - conflict_user_count),
     }
     return row
 
 
 def v3_candidate_rule_count(sample: dict[str, Any], user_count: int) -> int:
     return user_count * sum(
-        len(values)
-        for values in sample["category_values"].values()
+        len(values) for values in sample["category_values"].values()
     )
 
 
@@ -957,12 +941,7 @@ def generate_v3_sampled_split_rows(
         * len(ratios)
         * num_random_fills
     )
-    feasible_candidate_count = (
-        len(feasible_pairs)
-        * 2
-        * len(ratios)
-        * num_random_fills
-    )
+    feasible_candidate_count = len(feasible_pairs) * 2 * len(ratios) * num_random_fills
     skipped_by_rule_limit = total_candidate_count - feasible_candidate_count
     if target_count and not feasible_pairs:
         raise ValueError(
@@ -992,9 +971,7 @@ def generate_v3_sampled_split_rows(
     progress = iter(progress_bar)
     while len(rows) < target_count and attempts < max_attempts:
         conflict_ratio = (
-            ratio_plan[len(rows)]
-            if len(rows) < len(ratio_plan)
-            else rng.choice(ratios)
+            ratio_plan[len(rows)] if len(rows) < len(ratio_plan) else rng.choice(ratios)
         )
         attempts += 1
         sample, user_count = rng.choice(feasible_pairs)
@@ -1101,8 +1078,7 @@ def generate_v3_split_rows(
             for category, values in sample["category_values"].items()
         }
         selected_attributes = {
-            category: rng.choice(values)
-            for category, values in category_values.items()
+            category: rng.choice(values) for category, values in category_values.items()
         }
         filler_labels = {
             (category, value): rng.choice(("yes", "no"))
@@ -1165,7 +1141,9 @@ def generate_v3_split_rows(
                             skipped_by_rule_limit += 1
                             continue
 
-                        tool_name = rng.choice(tool_name_list) if tool_name_list else None
+                        tool_name = (
+                            rng.choice(tool_name_list) if tool_name_list else None
+                        )
                         row = make_base_row(
                             {
                                 "category_idx": sample["category_idx"],
@@ -1190,9 +1168,7 @@ def generate_v3_split_rows(
                             dataset_name=dataset_name,
                             tool_name=tool_name,
                         )
-                        actual_conflict_ratio = conflict_user_count / (
-                            user_count - 1
-                        )
+                        actual_conflict_ratio = conflict_user_count / (user_count - 1)
                         row["metadata"]["v3"] = {
                             "main_user": target_user,
                             "user_count": user_count,
@@ -1365,6 +1341,568 @@ def write_v3_dataset_splits(
     return written_counts
 
 
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows = []
+    with path.open(encoding="utf-8") as f:
+        for line_number, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON at {path}:{line_number}") from exc
+    return rows
+
+
+def v4_dataset_name(source_dataset_name: str) -> str:
+    if source_dataset_name == GENERAL_AUTHORITY:
+        return GENERAL_AUTHORITY_V4
+    if source_dataset_name == TOOL_AUTHORITY:
+        return TOOL_AUTHORITY_V4
+    raise ValueError(f"Unsupported V4 source dataset: {source_dataset_name}")
+
+
+def v5_dataset_name(source_dataset_name: str) -> str:
+    if source_dataset_name == GENERAL_AUTHORITY_V4:
+        return GENERAL_AUTHORITY_V5
+    if source_dataset_name == TOOL_AUTHORITY_V4:
+        return TOOL_AUTHORITY_V5
+    raise ValueError(f"Unsupported V5 source dataset: {source_dataset_name}")
+
+
+def v4_category_domain(dataset_name: str, category: str) -> list[str]:
+    if dataset_name == GENERAL_AUTHORITY:
+        domain = DEFAULT_CATEGORIES
+    elif dataset_name == TOOL_AUTHORITY:
+        domain = TOOL_AUTHORITY_CATEGORIES
+    else:
+        raise ValueError(f"Unsupported V4 source dataset: {dataset_name}")
+    return list(domain[category])
+
+
+def rule_matches_query_value(
+    rule: dict[str, str],
+    query_attributes: dict[str, str],
+) -> bool:
+    return query_attributes.get(rule["category"]) == rule["value"]
+
+
+def v4_make_non_matching_rules(
+    *,
+    source_dataset_name: str,
+    source_rules: list[dict[str, str]],
+    query_attributes: dict[str, str],
+    rng: random.Random,
+) -> list[dict[str, str]]:
+    rules = [
+        dict(rule)
+        for rule in source_rules
+        if not rule_matches_query_value(rule, query_attributes)
+    ]
+    present_values = {(rule["category"], rule["value"]) for rule in rules}
+
+    for category, query_value in query_attributes.items():
+        if any(rule["category"] == category for rule in rules):
+            continue
+        alternatives = [
+            value
+            for value in v4_category_domain(source_dataset_name, category)
+            if value != query_value and (category, value) not in present_values
+        ]
+        if not alternatives:
+            continue
+        value = rng.choice(alternatives)
+        rules.append(
+            {
+                "category": category,
+                "value": value,
+                "label": rng.choice(("yes", "no")),
+            }
+        )
+        present_values.add((category, value))
+
+    return rules
+
+
+def v4_make_matching_rules(
+    *,
+    source_rules: list[dict[str, str]],
+    query_attributes: dict[str, str],
+    selected_label: str,
+) -> list[dict[str, str]]:
+    rules = []
+    matched_categories = set()
+    for rule in source_rules:
+        copied = dict(rule)
+        if rule_matches_query_value(copied, query_attributes):
+            copied["label"] = selected_label
+            matched_categories.add(copied["category"])
+        rules.append(copied)
+
+    existing_values = {(rule["category"], rule["value"]) for rule in rules}
+    for category, query_value in query_attributes.items():
+        if category in matched_categories:
+            continue
+        if (category, query_value) not in existing_values:
+            rules.append(
+                {
+                    "category": category,
+                    "value": query_value,
+                    "label": selected_label,
+                }
+            )
+
+    return rules
+
+
+def v5_make_matching_rules_preserving_count(
+    *,
+    source_rules: list[dict[str, str]],
+    query_attributes: dict[str, str],
+    selected_label: str,
+) -> list[dict[str, str]]:
+    """Make a V4 user applicable while preserving rule count when possible."""
+    rules = [dict(rule) for rule in source_rules]
+    used_indices = set()
+
+    for category, query_value in query_attributes.items():
+        matching_index = next(
+            (
+                index
+                for index, rule in enumerate(rules)
+                if rule["category"] == category and rule["value"] == query_value
+            ),
+            None,
+        )
+        if matching_index is None:
+            matching_index = next(
+                (
+                    index
+                    for index, rule in enumerate(rules)
+                    if rule["category"] == category and index not in used_indices
+                ),
+                None,
+            )
+        if matching_index is None:
+            rules.append(
+                {
+                    "category": category,
+                    "value": query_value,
+                    "label": selected_label,
+                }
+            )
+            used_indices.add(len(rules) - 1)
+            continue
+        rules[matching_index]["value"] = query_value
+        rules[matching_index]["label"] = selected_label
+        used_indices.add(matching_index)
+
+    return rules
+
+
+def v4_decision_from_rules(
+    rules: list[dict[str, str]],
+    query_attributes: dict[str, str],
+) -> str | None:
+    labels_by_query_category = {}
+    for rule in rules:
+        if rule_matches_query_value(rule, query_attributes):
+            labels_by_query_category[rule["category"]] = rule["label"]
+
+    if set(labels_by_query_category) != set(query_attributes):
+        return None
+    return (
+        "yes"
+        if all(label == "yes" for label in labels_by_query_category.values())
+        else "no"
+    )
+
+
+def make_v4_row_from_v1_row(
+    row: dict[str, Any],
+    *,
+    source_dataset_name: str,
+    split_name: str,
+    target_user_count: int,
+    force_conflict: bool,
+    lower_match_probability: float,
+    rng: random.Random,
+) -> dict[str, Any]:
+    target_dataset_name = v4_dataset_name(source_dataset_name)
+    query_attributes = dict(row["Query"]["attributes"])
+    target_label = row["Label"].lower()
+    opposite = opposite_label(target_label)
+    source_users = row["AuthoritySetting"]["users"]
+    if target_user_count < 2:
+        raise ValueError("V4 rows require at least two users.")
+    user_ids = list(USER_IDS[:target_user_count])
+    user_count = target_user_count
+    priority = rng.sample(user_ids, k=user_count)
+
+    if user_count == 1:
+        deciding_index = 0
+    elif force_conflict:
+        deciding_index = rng.randrange(user_count - 1)
+    else:
+        deciding_index = rng.randrange(user_count)
+
+    deciding_user = priority[deciding_index]
+    higher_priority_users = priority[:deciding_index]
+    lower_priority_users = priority[deciding_index + 1 :]
+    conflict_users = set()
+    if force_conflict:
+        if not lower_priority_users:
+            raise ValueError("V4 conflict rows require a lower-priority user.")
+        conflict_users.add(rng.choice(lower_priority_users))
+
+    lower_matching_users = set(conflict_users)
+    lower_non_matching_users = set()
+    for user_id in lower_priority_users:
+        if user_id in conflict_users:
+            continue
+        if rng.random() < lower_match_probability:
+            lower_matching_users.add(user_id)
+        else:
+            lower_non_matching_users.add(user_id)
+
+    updated_users = []
+    for user_index, user_id in enumerate(user_ids):
+        source_user = source_users[user_index % len(source_users)]
+        source_rules = source_user["rules"]
+        if user_id in higher_priority_users or user_id in lower_non_matching_users:
+            selected_label = "not_applicable"
+            rules = v4_make_non_matching_rules(
+                source_dataset_name=source_dataset_name,
+                source_rules=source_rules,
+                query_attributes=query_attributes,
+                rng=rng,
+            )
+        elif user_id in conflict_users:
+            selected_label = opposite
+            rules = v4_make_matching_rules(
+                source_rules=source_rules,
+                query_attributes=query_attributes,
+                selected_label=opposite,
+            )
+        else:
+            selected_label = target_label
+            rules = v4_make_matching_rules(
+                source_rules=source_rules,
+                query_attributes=query_attributes,
+                selected_label=target_label,
+            )
+
+        updated_users.append(
+            {
+                "user": user_id,
+                "authority": selected_label,
+                "rules": rules,
+            }
+        )
+
+    authority_setting = {
+        "dataset": target_dataset_name,
+        "users": updated_users,
+    }
+    if "tool" in row["AuthoritySetting"]:
+        authority_setting["tool"] = row["AuthoritySetting"]["tool"]
+
+    metadata = dict(row["metadata"])
+    source_metadata = dict(metadata.get("source") or {})
+    source_user_count = len(source_users)
+    source_metadata.update(
+        {
+            "source_dataset": source_dataset_name,
+            "source_split": split_name,
+            "source_row_id": row.get("id"),
+            "source_user_count": source_user_count,
+            "user_count": target_user_count,
+            "target_user": deciding_user,
+            "target_label": target_label,
+        }
+    )
+    metadata.update(
+        {
+            "priority": priority,
+            "is_conflict": bool(conflict_users),
+            "BaseAuthoritySetting": authority_setting,
+            "ParaphraseVersion": None,
+            "RuleCount": count_scenario_rules(updated_users),
+            "source": source_metadata,
+            "v4": {
+                "source_dataset": source_dataset_name,
+                "source_split": split_name,
+                "source_row_id": row.get("id"),
+                "source_user_count": source_user_count,
+                "user_count": target_user_count,
+                "deciding_user": deciding_user,
+                "deciding_user_priority_index": deciding_index,
+                "higher_priority_non_matching_user_count": len(higher_priority_users),
+                "higher_priority_non_matching_users": list(higher_priority_users),
+                "lower_priority_user_count": len(lower_priority_users),
+                "lower_priority_matching_user_count": len(lower_matching_users),
+                "lower_priority_matching_users": [
+                    user_id
+                    for user_id in lower_priority_users
+                    if user_id in lower_matching_users
+                ],
+                "lower_priority_non_matching_user_count": len(lower_non_matching_users),
+                "lower_priority_non_matching_users": [
+                    user_id
+                    for user_id in lower_priority_users
+                    if user_id in lower_non_matching_users
+                ],
+                "lower_priority_conflict_user_count": len(conflict_users),
+                "lower_priority_conflict_users": [
+                    user_id
+                    for user_id in lower_priority_users
+                    if user_id in conflict_users
+                ],
+                "lower_priority_agreeing_user_count": (
+                    len(lower_matching_users) - len(conflict_users)
+                ),
+                "lower_priority_agreeing_users": [
+                    user_id
+                    for user_id in lower_priority_users
+                    if user_id in lower_matching_users and user_id not in conflict_users
+                ],
+            },
+        }
+    )
+
+    return {
+        "AuthoritySetting": authority_setting,
+        "Query": row["Query"],
+        "Label": row["Label"],
+        "metadata": metadata,
+    }
+
+
+def make_v4_rows_from_v1_rows(
+    rows: list[dict[str, Any]],
+    *,
+    source_dataset_name: str,
+    split_name: str,
+    seed: int,
+    user_counts: int | str | Iterable[int],
+    conflict_ratio: float = DEFAULT_V4_CONFLICT_RATIO,
+    lower_match_probability: float = DEFAULT_V4_LOWER_MATCH_PROBABILITY,
+) -> list[dict[str, Any]]:
+    rng = random.Random(seed)
+    if not 0 <= conflict_ratio <= 1:
+        raise ValueError("V4 conflict ratio must be between 0 and 1.")
+    if not 0 <= lower_match_probability <= 1:
+        raise ValueError("V4 lower match probability must be between 0 and 1.")
+    parsed_user_counts = parse_user_count_spec(user_counts)
+    if any(user_count < 2 for user_count in parsed_user_counts):
+        raise ValueError("V4 user counts must be at least 2.")
+
+    target_conflict_count = round(len(rows) * conflict_ratio)
+    if target_conflict_count > len(rows):
+        raise ValueError(
+            f"Cannot make {target_conflict_count} V4 conflict rows from "
+            f"{len(rows)} rows."
+        )
+    conflict_indices = set(rng.sample(range(len(rows)), k=target_conflict_count))
+
+    return add_row_ids(
+        [
+            make_v4_row_from_v1_row(
+                row,
+                source_dataset_name=source_dataset_name,
+                split_name=split_name,
+                target_user_count=rng.choice(parsed_user_counts),
+                force_conflict=row_idx in conflict_indices,
+                lower_match_probability=lower_match_probability,
+                rng=rng,
+            )
+            for row_idx, row in enumerate(rows)
+        ]
+    )
+
+
+def write_v4_dataset_splits_from_v1(
+    *,
+    input_dir: Path = DEFAULT_OUTPUT_DIR,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    seed: int = 42,
+    train_user_counts: int | str | Iterable[int] = DEFAULT_V4_TRAIN_NUM_USERS,
+    test_user_counts: int | str | Iterable[int] = DEFAULT_V4_TEST_NUM_USERS,
+    conflict_ratio: float = DEFAULT_V4_CONFLICT_RATIO,
+    lower_match_probability: float = DEFAULT_V4_LOWER_MATCH_PROBABILITY,
+) -> dict[str, dict[str, int]]:
+    written_counts = {}
+    split_user_counts = {
+        "train": parse_user_count_spec(train_user_counts),
+        "test": parse_user_count_spec(test_user_counts),
+    }
+    for dataset_idx, source_dataset_name in enumerate(
+        (GENERAL_AUTHORITY, TOOL_AUTHORITY)
+    ):
+        target_dataset_name = v4_dataset_name(source_dataset_name)
+        written_counts[target_dataset_name] = {}
+        for split_idx, split_name in enumerate(("train", "test")):
+            input_path = input_dir / source_dataset_name / f"{split_name}.jsonl"
+            rows = read_jsonl(input_path)
+            v4_rows = make_v4_rows_from_v1_rows(
+                rows,
+                source_dataset_name=source_dataset_name,
+                split_name=split_name,
+                seed=seed + 5000 + dataset_idx * 100 + split_idx,
+                user_counts=split_user_counts[split_name],
+                conflict_ratio=conflict_ratio,
+                lower_match_probability=lower_match_probability,
+            )
+            output_path = output_dir / target_dataset_name / f"{split_name}.jsonl"
+            write_jsonl(output_path, v4_rows)
+            written_counts[target_dataset_name][split_name] = len(v4_rows)
+    return written_counts
+
+
+def make_v5_row_from_v4_row(
+    row: dict[str, Any],
+    *,
+    source_dataset_name: str,
+    split_name: str,
+) -> dict[str, Any]:
+    target_dataset_name = v5_dataset_name(source_dataset_name)
+    query_attributes = dict(row["Query"]["attributes"])
+    target_label = row["Label"].lower()
+    source_users = row["AuthoritySetting"]["users"]
+    priority = list(row["metadata"]["priority"])
+    converted_non_applicable_users = []
+    conflict_users = []
+    agreeing_users = []
+    updated_users = []
+
+    for source_user in source_users:
+        user_id = source_user["user"]
+        source_authority = source_user["authority"]
+        selected_label = (
+            target_label
+            if source_authority == "not_applicable"
+            else source_authority
+        )
+        if source_authority == "not_applicable":
+            converted_non_applicable_users.append(user_id)
+        if selected_label == target_label:
+            agreeing_users.append(user_id)
+        else:
+            conflict_users.append(user_id)
+
+        updated_users.append(
+            {
+                "user": user_id,
+                "authority": selected_label,
+                "rules": v5_make_matching_rules_preserving_count(
+                    source_rules=source_user["rules"],
+                    query_attributes=query_attributes,
+                    selected_label=selected_label,
+                ),
+            }
+        )
+
+    authority_setting = {
+        "dataset": target_dataset_name,
+        "users": updated_users,
+    }
+    if "tool" in row["AuthoritySetting"]:
+        authority_setting["tool"] = row["AuthoritySetting"]["tool"]
+
+    metadata = dict(row["metadata"])
+    metadata.pop("v4", None)
+    source_metadata = dict(metadata.get("source") or {})
+    source_metadata.update(
+        {
+            "source_dataset": source_dataset_name,
+            "source_split": split_name,
+            "source_row_id": row.get("id"),
+            "source_user_count": len(source_users),
+            "user_count": len(source_users),
+            "target_user": priority[0] if priority else None,
+            "target_label": target_label,
+        }
+    )
+    source_rule_count = row["metadata"].get("RuleCount")
+    rule_count = count_scenario_rules(updated_users)
+    metadata.update(
+        {
+            "priority": priority,
+            "is_conflict": bool(conflict_users),
+            "BaseAuthoritySetting": authority_setting,
+            "ParaphraseVersion": None,
+            "RuleCount": rule_count,
+            "source": source_metadata,
+            "v5": {
+                "source_dataset": source_dataset_name,
+                "source_split": split_name,
+                "source_row_id": row.get("id"),
+                "source_user_count": len(source_users),
+                "user_count": len(source_users),
+                "source_rule_count": source_rule_count,
+                "rule_count": rule_count,
+                "rule_count_matches_source": rule_count == source_rule_count,
+                "converted_non_applicable_user_count": len(
+                    converted_non_applicable_users
+                ),
+                "converted_non_applicable_users": converted_non_applicable_users,
+                "conflict_user_count": len(conflict_users),
+                "conflict_users": conflict_users,
+                "agreeing_user_count": len(agreeing_users),
+                "agreeing_users": agreeing_users,
+            },
+        }
+    )
+
+    return {
+        "AuthoritySetting": authority_setting,
+        "Query": row["Query"],
+        "Label": row["Label"],
+        "metadata": metadata,
+    }
+
+
+def make_v5_rows_from_v4_rows(
+    rows: list[dict[str, Any]],
+    *,
+    source_dataset_name: str,
+    split_name: str,
+) -> list[dict[str, Any]]:
+    return add_row_ids(
+        [
+            make_v5_row_from_v4_row(
+                row,
+                source_dataset_name=source_dataset_name,
+                split_name=split_name,
+            )
+            for row in rows
+        ]
+    )
+
+
+def write_v5_dataset_splits_from_v4(
+    *,
+    input_dir: Path = DEFAULT_OUTPUT_DIR,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+) -> dict[str, dict[str, int]]:
+    written_counts = {}
+    for source_dataset_name in (GENERAL_AUTHORITY_V4, TOOL_AUTHORITY_V4):
+        target_dataset_name = v5_dataset_name(source_dataset_name)
+        written_counts[target_dataset_name] = {}
+        for split_name in ("train", "test"):
+            input_path = input_dir / source_dataset_name / f"{split_name}.jsonl"
+            rows = read_jsonl(input_path)
+            v5_rows = make_v5_rows_from_v4_rows(
+                rows,
+                source_dataset_name=source_dataset_name,
+                split_name=split_name,
+            )
+            output_path = output_dir / target_dataset_name / f"{split_name}.jsonl"
+            write_jsonl(output_path, v5_rows)
+            written_counts[target_dataset_name][split_name] = len(v5_rows)
+    return written_counts
+
+
 def sample_v3_split_rows(
     rows: list[dict[str, Any]],
     *,
@@ -1397,14 +1935,10 @@ def sample_v3_split_rows(
         selected_set.add(index)
 
     remaining_indices = [
-        index
-        for index in range(len(rows))
-        if index not in selected_set
+        index for index in range(len(rows)) if index not in selected_set
     ]
     rng.shuffle(remaining_indices)
-    selected_indices.extend(
-        remaining_indices[: target_count - len(selected_indices)]
-    )
+    selected_indices.extend(remaining_indices[: target_count - len(selected_indices)])
     rng.shuffle(selected_indices)
     return [rows[index] for index in selected_indices]
 
@@ -1506,7 +2040,9 @@ def split_rows(
     test_user_counts_set = (
         set(test_user_counts) if test_user_counts is not None else None
     )
-    train_categories_set = set(train_categories) if train_categories is not None else None
+    train_categories_set = (
+        set(train_categories) if train_categories is not None else None
+    )
     test_categories_set = set(test_categories) if test_categories is not None else None
     train_tools_set = set(train_tools) if train_tools is not None else None
     test_tools_set = set(test_tools) if test_tools is not None else None
@@ -1515,9 +2051,7 @@ def split_rows(
     test_only_rows = []
     shared_rows = []
     train_rule_limit = (
-        max_rules_per_scenario // 2
-        if max_rules_per_scenario is not None
-        else None
+        max_rules_per_scenario // 2 if max_rules_per_scenario is not None else None
     )
 
     for row in rows:
@@ -1800,8 +2334,7 @@ def print_examples_table(rows: list[dict], num_examples: int = 5) -> None:
     for row in table_rows:
         print(
             " | ".join(
-                _format_cell(row[column_name], width)
-                for column_name, width in columns
+                _format_cell(row[column_name], width) for column_name, width in columns
             )
         )
 
@@ -1845,20 +2378,21 @@ def print_base_examples_table(
     for row in table_rows:
         print(
             " | ".join(
-                _format_cell(row[column_name], width)
-                for column_name, width in columns
+                _format_cell(row[column_name], width) for column_name, width in columns
             )
         )
 
 
 def main() -> None:
     args = parse_args()
-    train_user_counts, test_user_counts, generation_user_counts = (
-        resolve_split_user_counts(
-            num_users=args.num_users,
-            train_num_users=args.train_num_users,
-            test_num_users=args.test_num_users,
-        )
+    (
+        train_user_counts,
+        test_user_counts,
+        generation_user_counts,
+    ) = resolve_split_user_counts(
+        num_users=args.num_users,
+        train_num_users=args.train_num_users,
+        test_num_users=args.test_num_users,
     )
     max_rules_per_scenario = resolve_max_rules_per_scenario(
         args.max_rules_per_scenario,

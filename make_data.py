@@ -18,15 +18,22 @@ from src.make_base_authority_data import (
     DEFAULT_V3_MAX_RULES_PER_SCENARIO,
     DEFAULT_V3_TEST_NUM_USERS,
     DEFAULT_V3_TRAIN_NUM_USERS,
+    DEFAULT_V4_CONFLICT_RATIO,
+    DEFAULT_V4_LOWER_MATCH_PROBABILITY,
+    DEFAULT_V4_TEST_NUM_USERS,
+    DEFAULT_V4_TRAIN_NUM_USERS,
     GENERAL_AUTHORITY,
     TOOL_AUTHORITY,
     generate_base_authority_datasets,
     generate_v3_base_authority_dataset_splits,
     resolve_max_rules_per_scenario,
     resolve_split_user_counts,
+    write_v4_dataset_splits_from_v1,
+    write_v5_dataset_splits_from_v4,
     write_v3_dataset_splits,
     write_dataset_splits,
 )
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -105,6 +112,41 @@ def parse_args() -> argparse.Namespace:
         help="Skip GeneralAuthorityV3 and ToolAuthorityV3 generation.",
     )
     parser.add_argument(
+        "--no-v4",
+        action="store_true",
+        help="Skip GeneralAuthorityV4 and ToolAuthorityV4 generation from V1 splits.",
+    )
+    parser.add_argument(
+        "--no-v5",
+        action="store_true",
+        help=(
+            "Skip GeneralAuthorityV5 and ToolAuthorityV5 generation from V4 "
+            "splits. V5 keeps V4 user/rule counts with V1-style applicability."
+        ),
+    )
+    parser.add_argument(
+        "--v4-conflict-ratio",
+        type=float,
+        default=DEFAULT_V4_CONFLICT_RATIO,
+        help="Target fraction of V4 rows with at least one lower-priority conflict.",
+    )
+    parser.add_argument(
+        "--v4-train-num-users",
+        default=DEFAULT_V4_TRAIN_NUM_USERS,
+        help="V4 train user counts. Supports comma lists or ranges. Default: 2-4.",
+    )
+    parser.add_argument(
+        "--v4-test-num-users",
+        default=DEFAULT_V4_TEST_NUM_USERS,
+        help="V4 test user counts. Supports comma lists or ranges. Default: 2-7.",
+    )
+    parser.add_argument(
+        "--v4-lower-match-probability",
+        type=float,
+        default=DEFAULT_V4_LOWER_MATCH_PROBABILITY,
+        help="Bernoulli probability that each non-conflict lower-priority user matches.",
+    )
+    parser.add_argument(
         "--v3-train-num-users",
         default=DEFAULT_V3_TRAIN_NUM_USERS,
         help="V3 train user counts. Supports comma lists or ranges. Default: 1-5.",
@@ -156,12 +198,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    train_user_counts, test_user_counts, generation_user_counts = (
-        resolve_split_user_counts(
-            num_users=args.num_users,
-            train_num_users=args.train_num_users,
-            test_num_users=args.test_num_users,
-        )
+    (
+        train_user_counts,
+        test_user_counts,
+        generation_user_counts,
+    ) = resolve_split_user_counts(
+        num_users=args.num_users,
+        train_num_users=args.train_num_users,
+        test_num_users=args.test_num_users,
     )
     max_rules_per_scenario = resolve_max_rules_per_scenario(
         args.max_rules_per_scenario,
@@ -197,6 +241,25 @@ def main() -> None:
         },
         seed=args.seed,
     )
+    if not args.no_v4:
+        base_counts["v4"] = {
+            "written": write_v4_dataset_splits_from_v1(
+                input_dir=args.base_output_dir,
+                output_dir=args.base_output_dir,
+                seed=args.seed,
+                train_user_counts=args.v4_train_num_users,
+                test_user_counts=args.v4_test_num_users,
+                conflict_ratio=args.v4_conflict_ratio,
+                lower_match_probability=args.v4_lower_match_probability,
+            )
+        }
+    if not args.no_v5:
+        base_counts["v5"] = {
+            "written": write_v5_dataset_splits_from_v4(
+                input_dir=args.base_output_dir,
+                output_dir=args.base_output_dir,
+            )
+        }
     if not args.no_v3:
         v3_datasets, v3_counts = generate_v3_base_authority_dataset_splits(
             seed=args.seed,

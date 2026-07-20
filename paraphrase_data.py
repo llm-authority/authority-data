@@ -34,10 +34,7 @@ DEFAULT_SPLIT_NAMES = ("train", "test")
 DEFAULT_MODEL = os.environ.get("OPENAI_PARAPHRASE_MODEL", "gpt-5.4-mini")
 DEFAULT_PARAPHRASE_VERSION = "v2"
 DEFAULT_CACHE_PATH = (
-    REPO_ROOT
-    / "data"
-    / "paraphrase_cache"
-    / f"{DEFAULT_PARAPHRASE_VERSION}.jsonl"
+    REPO_ROOT / "data" / "paraphrase_cache" / f"{DEFAULT_PARAPHRASE_VERSION}.jsonl"
 )
 
 MODEL_PRICING_USD_PER_1M_TOKENS = {
@@ -301,20 +298,30 @@ def render_text_with_natural_query(
     tool = authority_setting.get("tool")
 
     if is_tool_authority(dataset_name):
-        scope = f"Task: decide whether the requested use of the {tool} tool is authorized."
+        scope = (
+            f"Task: decide whether the requested use of the {tool} tool is authorized."
+        )
     elif tool:
         scope = f"Task: decide whether {tool} is authorized."
     else:
         scope = "Task: decide whether the requested action is authorized."
 
-    instruction = (
-        "Multiple users provide allow/disallow rules for the requested action. "
-        "If their rules disagree, follow the priority order."
-    )
+    if base_row.get("metadata", {}).get("v4") is not None:
+        instruction = (
+            "Multiple users provide allow/disallow rules for the requested action. "
+            "Check users in priority order. A user decides the request only when "
+            "their rules explicitly mention all requested conditions; otherwise "
+            "continue to the next user. If applicable rules disagree, follow the "
+            "highest-priority applicable user."
+        )
+    else:
+        instruction = (
+            "Multiple users provide allow/disallow rules for the requested action. "
+            "If their rules disagree, follow the priority order."
+        )
     priority_text = " > ".join(user_display_name(user) for user in priority)
     user_text = "\n\n".join(
-        render_user_policy(user_setting)
-        for user_setting in authority_setting["users"]
+        render_user_policy(user_setting) for user_setting in authority_setting["users"]
     )
     query_header = "Query conditions" if is_tool_authority(dataset_name) else "Query"
     return (
@@ -577,7 +584,9 @@ def make_output_row(
     }
 
 
-def selected_rows(rows: list[dict[str, Any]], *, offset: int, limit: int | None) -> list[dict[str, Any]]:
+def selected_rows(
+    rows: list[dict[str, Any]], *, offset: int, limit: int | None
+) -> list[dict[str, Any]]:
     if offset < 0:
         raise ValueError("--offset must be non-negative")
     if limit is not None and limit < 0:
@@ -753,16 +762,15 @@ def main() -> None:
     if args.cache_only:
         args.mode = "build-output"
     if args.mode == "build-output" and args.refresh_cache:
-        raise ValueError("--mode build-output and --refresh-cache cannot be used together.")
+        raise ValueError(
+            "--mode build-output and --refresh-cache cannot be used together."
+        )
     if (
         args.cache_path == DEFAULT_CACHE_PATH
         and args.paraphrase_version != DEFAULT_PARAPHRASE_VERSION
     ):
         args.cache_path = (
-            REPO_ROOT
-            / "data"
-            / "paraphrase_cache"
-            / f"{args.paraphrase_version}.jsonl"
+            REPO_ROOT / "data" / "paraphrase_cache" / f"{args.paraphrase_version}.jsonl"
         )
 
     if args.dry_run:
@@ -770,7 +778,9 @@ def main() -> None:
             for split_name in args.splits:
                 input_path = args.input_dir / dataset_name / f"{split_name}.jsonl"
                 if input_path.exists():
-                    rows = selected_rows(read_jsonl(input_path), offset=args.offset, limit=1)
+                    rows = selected_rows(
+                        read_jsonl(input_path), offset=args.offset, limit=1
+                    )
                     if rows:
                         print_dry_run(
                             input_path,

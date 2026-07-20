@@ -27,11 +27,23 @@ DEFAULT_CONFIGS = (
     "GeneralAuthorityV1",
     "GeneralAuthorityV2",
     "GeneralAuthorityV3",
+    "GeneralAuthorityV4",
+    "GeneralAuthorityV5",
     "ToolAuthorityV1",
     "ToolAuthorityV2",
     "ToolAuthorityV3",
+    "ToolAuthorityV4",
+    "ToolAuthorityV5",
 )
-DEFAULT_OLD_REMOTE_CONFIGS = ("GeneralAuthority", "ToolAuthority", "V1", "V2", "V3")
+DEFAULT_OLD_REMOTE_CONFIGS = (
+    "GeneralAuthority",
+    "ToolAuthority",
+    "V1",
+    "V2",
+    "V3",
+    "V4",
+    "V5",
+)
 DEFAULT_SPLITS = ("train", "test")
 
 from paraphrase_data import (
@@ -86,8 +98,9 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_CONFIGS),
         help=(
             "HF config names to push. Default: GeneralAuthorityV1 "
-            "GeneralAuthorityV2 GeneralAuthorityV3 ToolAuthorityV1 "
-            "ToolAuthorityV2 ToolAuthorityV3."
+            "GeneralAuthorityV2 GeneralAuthorityV3 GeneralAuthorityV4 "
+            "GeneralAuthorityV5 ToolAuthorityV1 ToolAuthorityV2 ToolAuthorityV3 "
+            "ToolAuthorityV4 ToolAuthorityV5."
         ),
     )
     parser.add_argument(
@@ -97,7 +110,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Base directory names aligned with --configs. "
             "Default: infer V2 configs from their matching V1 base directory; "
-            "V1 and V3 configs use same-named base directories."
+            "V1, V3, V4, and V5 configs use same-named base directories."
         ),
     )
     parser.add_argument(
@@ -185,7 +198,9 @@ def make_base_push_row(base_row: dict[str, Any], *, version: str) -> dict[str, A
         v3_metadata = dict(v3_metadata)
         user_count = v3_metadata.get("user_count")
         if user_count is None:
-            user_count = base_row.get("metadata", {}).get("source", {}).get("user_count")
+            user_count = (
+                base_row.get("metadata", {}).get("source", {}).get("user_count")
+            )
         if user_count is None:
             user_count = len(base_row["AuthoritySetting"]["users"])
         v3_metadata["user_count"] = user_count
@@ -194,6 +209,12 @@ def make_base_push_row(base_row: dict[str, Any], *, version: str) -> dict[str, A
             user_count - 1,
         )
         meta_data["v3"] = v3_metadata
+    v4_metadata = base_row.get("metadata", {}).get("v4")
+    if v4_metadata is not None:
+        meta_data["v4"] = dict(v4_metadata)
+    v5_metadata = base_row.get("metadata", {}).get("v5")
+    if v5_metadata is not None:
+        meta_data["v5"] = dict(v5_metadata)
     return {
         "text": render_synthetic_paraphrase(base_row),
         "label": base_row["Label"],
@@ -300,8 +321,7 @@ def normalize_query_schema(
     query = row["meta_data"]["query"]
     attributes = query.get("attributes", {})
     query["attributes"] = {
-        attribute_key: attributes.get(attribute_key)
-        for attribute_key in attribute_keys
+        attribute_key: attributes.get(attribute_key) for attribute_key in attribute_keys
     }
     if include_tool:
         query["tool"] = query.get("tool")
@@ -377,8 +397,7 @@ def build_dataset_dict(
     )
     query_features: dict[str, Any] = {
         "attributes": {
-            attribute_key: Value("string")
-            for attribute_key in attribute_keys
+            attribute_key: Value("string") for attribute_key in attribute_keys
         },
     }
     if include_tool:
@@ -398,6 +417,23 @@ def build_dataset_dict(
             "actual_conflict_ratio": Value("float64"),
             "conflict_user_count": Value("int64"),
             "agreeing_lower_priority_user_count": Value("int64"),
+        }
+    if config_spec.version == "v5":
+        meta_features["v5"] = {
+            "source_dataset": Value("string"),
+            "source_split": Value("string"),
+            "source_row_id": Value("int64"),
+            "source_user_count": Value("int64"),
+            "user_count": Value("int64"),
+            "source_rule_count": Value("int64"),
+            "rule_count": Value("int64"),
+            "rule_count_matches_source": Value("bool"),
+            "converted_non_applicable_user_count": Value("int64"),
+            "converted_non_applicable_users": [Value("string")],
+            "conflict_user_count": Value("int64"),
+            "conflict_users": [Value("string")],
+            "agreeing_user_count": Value("int64"),
+            "agreeing_users": [Value("string")],
         }
     features = Features(
         {
@@ -543,8 +579,7 @@ def print_dataset_card_metadata(summary: dict[str, dict[str, dict[str, Any]]]) -
             if info["rows"] == 0:
                 continue
             print(
-                f"[hf_push]     {split_name}: "
-                f"{config_name}/{split_name}-*.parquet"
+                f"[hf_push]     {split_name}: " f"{config_name}/{split_name}-*.parquet"
             )
 
 
@@ -568,7 +603,7 @@ def config_version(config_name: str) -> str:
     match = re.search(r"V(\d+)$", config_name)
     if not match:
         raise ValueError(
-            f"Config name must end with a version suffix like V1, V2, or V3: "
+            f"Config name must end with a version suffix like V1, V2, V3, V4, or V5: "
             f"{config_name}"
         )
     return f"v{match.group(1)}"
@@ -576,7 +611,7 @@ def config_version(config_name: str) -> str:
 
 def default_source_config(config_name: str) -> str:
     version = config_version(config_name)
-    if version in {"v1", "v3"}:
+    if version in {"v1", "v3", "v4", "v5"}:
         return config_name
     return re.sub(r"V\d+$", "V1", config_name)
 
@@ -639,9 +674,7 @@ def delete_remote_config_folders(
                 )
                 print(f"[hf_push] deleted remote folder: {folder_path}")
             except Exception as exc:
-                print(
-                    f"[hf_push] could not delete remote folder {folder_path}: {exc}"
-                )
+                print(f"[hf_push] could not delete remote folder {folder_path}: {exc}")
 
 
 def main() -> None:
@@ -669,8 +702,7 @@ def main() -> None:
     print(
         "[hf_push] configs = "
         + ", ".join(
-            f"{spec.config_name}<-{spec.source_config_name}"
-            for spec in config_specs
+            f"{spec.config_name}<-{spec.source_config_name}" for spec in config_specs
         )
     )
     print(f"[hf_push] splits = {', '.join(splits)}")
@@ -701,7 +733,9 @@ def main() -> None:
 
     if args.dataset_card_only:
         if args.skip_dataset_card:
-            raise ValueError("--dataset-card-only cannot be used with --skip-dataset-card")
+            raise ValueError(
+                "--dataset-card-only cannot be used with --skip-dataset-card"
+            )
         print("[hf_push] uploading README.md dataset viewer metadata only")
         upload_dataset_card(
             repo_id=args.repo_id,
@@ -734,9 +768,7 @@ def main() -> None:
         print(
             "[hf_push] pushing "
             f"{config_spec.config_name}: "
-            + ", ".join(
-                f"{split}={len(dataset_dict[split])}" for split in dataset_dict
-            )
+            + ", ".join(f"{split}={len(dataset_dict[split])}" for split in dataset_dict)
         )
         push_config(
             repo_id=args.repo_id,

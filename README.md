@@ -14,9 +14,13 @@ whose rules decide the query.
 | `GeneralAuthorityV1` | Deterministic bullets | General rules, mixed conflict/non-conflict | 500 | 1,500 | 2,000 |
 | `GeneralAuthorityV2` | LLM paraphrase | Same as V1 with natural queries | 491 | 1,468 | 1,959 |
 | `GeneralAuthorityV3` | Deterministic bullets | Conflict-only, many-user stress test | 500 | 1,500 | 2,000 |
+| `GeneralAuthorityV4` | Deterministic bullets | First applicable user, higher-priority non-matches | 500 | 1,500 | 2,000 |
+| `GeneralAuthorityV5` | Deterministic bullets | V1-style all-applicable users matched to V4 user/rule counts | 500 | 1,500 | 2,000 |
 | `ToolAuthorityV1` | Deterministic bullets | Tool-use rules, mixed conflict/non-conflict | 1,000 | 3,000 | 4,000 |
 | `ToolAuthorityV2` | LLM paraphrase | Same as V1 with natural queries | 991 | 2,893 | 3,884 |
 | `ToolAuthorityV3` | Deterministic bullets | Conflict-only, many-user stress test | 1,000 | 3,000 | 4,000 |
+| `ToolAuthorityV4` | Deterministic bullets | First applicable user, higher-priority non-matches | 1,000 | 3,000 | 4,000 |
+| `ToolAuthorityV5` | Deterministic bullets | V1-style all-applicable users matched to V4 user/rule counts | 1,000 | 3,000 | 4,000 |
 
 V2 has fewer rows because only semantically verified paraphrases are kept. V3
 is not paraphrased.
@@ -37,6 +41,21 @@ case. The main user receives the gold allow/disallow context; a controlled
 fraction of lower-priority users receives the same query context with the
 decision flipped. V3 keeps user-count stress while capping total prompt rules
 at 1,000 by default.
+
+V4 is derived from the V1 splits. The deciding user is placed at a random
+priority depth. Higher-priority users keep explicit allow/disallow rules, but
+their rules omit the queried values, so they are not applicable to the query.
+The label is decided by the first priority-ordered user whose rules explicitly
+match all queried conditions. Exactly 50% of rows include at least one
+lower-priority matching user with the opposite polarity; other lower-priority
+users independently match or do not match the query. V4 excludes one-user rows:
+train examples use 2-4 users and test examples use 2-7 users.
+
+V5 is derived from the V4 splits as a V1-style control. It keeps each V4 row's
+priority order, user count, and per-user rule count, but converts
+`not_applicable` users into applicable users by replacing one rule per queried
+category with the queried value. V5 therefore has no IDK/underspecified users:
+all users decide the query with `yes` or `no`.
 
 | Config | Train users | Test users | Conflict-user ratios |
 | --- | --- | --- | --- |
@@ -63,6 +82,14 @@ not counted.
 | `GeneralAuthorityV3` | `test` | 2-5 | sampled, <= 1,000 | 5-50 |
 | `ToolAuthorityV3` | `train` | 2-3 | sampled, <= 1,000 | 2-5 |
 | `ToolAuthorityV3` | `test` | 2-5 | sampled, <= 1,000 | 5-50 |
+| `GeneralAuthorityV4` | `train` | 2-3, avg 2.2 | 5-65, avg 26.2 | 2-4 |
+| `GeneralAuthorityV4` | `test` | 2-4, avg 2.9 | 6-184, avg 56.1 | 2-7 |
+| `GeneralAuthorityV5` | `train` | same as V4 | same as V4 | same as V4 |
+| `GeneralAuthorityV5` | `test` | same as V4 | same as V4 | same as V4 |
+| `ToolAuthorityV4` | `train` | 2-3, avg 2.2 | 4-92, avg 29.7 | 2-4 |
+| `ToolAuthorityV4` | `test` | 2-5, avg 2.8 | 4-181, avg 50.1 | 2-7 |
+| `ToolAuthorityV5` | `train` | same as V4 | same as V4 | same as V4 |
+| `ToolAuthorityV5` | `test` | same as V4 | same as V4 | same as V4 |
 
 V3 stores the conflict-ratio analysis fields in `meta_data.v3`: `main_user`,
 `user_count`, `lower_priority_user_count`, `requested_conflict_ratio`,
@@ -76,9 +103,11 @@ V3 stores the conflict-ratio analysis fields in `meta_data.v3`: `main_user`,
 | `text` | Rendered authority setting, priority order, and query. |
 | `label` | Gold answer: `Yes` or `No`. |
 | `meta_data.query` | Structured query conditions. |
-| `meta_data.paraphrase_version` | `v1`, `v2`, or `v3`. |
+| `meta_data.paraphrase_version` | `v1`, `v2`, `v3`, `v4`, or `v5`. |
 | `meta_data.query_meaning_score` | Present for V2; semantic verification score. |
 | `meta_data.v3` | Present for V3; main user, user count, and conflict-ratio metadata. |
+| `meta_data.v4` | Present for V4; deciding user, priority depth, non-matching higher-priority users, and lower-priority conflict metadata. |
+| `meta_data.v5` | Present for V5; V4 source row, user/rule count checks, converted users, and conflict metadata. |
 
 ## Load
 

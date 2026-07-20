@@ -67,7 +67,9 @@ def _user_display_name(user: str) -> str:
     return f"User {user}"
 
 
-def _group_rules_by_category(rules: list[dict[str, str]]) -> dict[str, dict[str, list[str]]]:
+def _group_rules_by_category(
+    rules: list[dict[str, str]]
+) -> dict[str, dict[str, list[str]]]:
     grouped: dict[str, dict[str, list[str]]] = defaultdict(
         lambda: {"yes": [], "no": []}
     )
@@ -131,19 +133,29 @@ def render_synthetic_paraphrase(base_row: dict[str, Any]) -> str:
     )
 
     if is_tool_authority:
-        scope = f"Task: decide whether the requested use of the {tool} tool is authorized."
+        scope = (
+            f"Task: decide whether the requested use of the {tool} tool is authorized."
+        )
     elif tool:
         scope = f"Task: decide whether {tool} is authorized."
     else:
         scope = "Task: decide whether the requested action is authorized."
-    instruction = (
-        "Multiple users provide allow/disallow rules for the requested action. "
-        "If their rules disagree, follow the priority order."
-    )
+    if base_row.get("metadata", {}).get("v4") is not None:
+        instruction = (
+            "Multiple users provide allow/disallow rules for the requested action. "
+            "Check users in priority order. A user decides the request only when "
+            "their rules explicitly mention all requested conditions; otherwise "
+            "continue to the next user. If applicable rules disagree, follow the "
+            "highest-priority applicable user."
+        )
+    else:
+        instruction = (
+            "Multiple users provide allow/disallow rules for the requested action. "
+            "If their rules disagree, follow the priority order."
+        )
     priority_text = " > ".join(_user_display_name(user) for user in priority)
     user_text = "\n\n".join(
-        render_user_policy(user_setting)
-        for user_setting in authority_setting["users"]
+        render_user_policy(user_setting) for user_setting in authority_setting["users"]
     )
     query_text = render_query(base_row["Query"], include_tool=not is_tool_authority)
     query_header = "Query conditions" if is_tool_authority else "Query"
@@ -351,7 +363,9 @@ def _print_full_table(rows: list[dict[str, Any]]) -> None:
             "text",
             row["text"],
         )
-        print("--------+------------------------+----------------------------------------")
+        print(
+            "--------+------------------------+----------------------------------------"
+        )
 
 
 def print_paraphrase_examples_table(
